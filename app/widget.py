@@ -169,6 +169,7 @@ class TimerWidget(ClockMixin, ContentMixin, PaintMixin, InteractMixin,
             self._first_prompt_done = True
             QTimer.singleShot(500, self._maybe_prompt_start)
         self._sync_rain_timer()             # 刚显示出来就下雨，不用等到下一个整秒
+        QTimer.singleShot(15000, self.check_update_silent)   # 起来 15 秒后再悄悄查版本
 
 
     def _apply_opacity(self) -> None:
