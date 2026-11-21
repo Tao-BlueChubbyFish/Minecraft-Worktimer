@@ -20,10 +20,15 @@ from PySide6.QtNetwork import (QNetworkAccessManager, QNetworkProxyFactory,
 from . import __version__
 
 # 仓库里的版本文件。改仓库名/分支时只改这两行。
-RAW = "https://raw.githubusercontent.com/BianTao-noob/Minecraft-Worktimer/main/latest.json"
-CDN = "https://cdn.jsdelivr.net/gh/BianTao-noob/Minecraft-Worktimer@main/latest.json"
+RAW = "https://raw.githubusercontent.com/Tao-BlueChubbyFish/Minecraft-Worktimer/main/latest.json"
+CDN = "https://cdn.jsdelivr.net/gh/Tao-BlueChubbyFish/Minecraft-Worktimer@main/latest.json"
 
 TIMEOUT_MS = 8000
+
+# 国内下载兜底。读不到 latest.json 时也能用（所以必须写死在代码里）。
+# 发新版换了蓝奏云链接，除了改这里，也可以在 latest.json 里加 url_cn / cn_password 覆盖。
+FALLBACK_CN_URL = "https://wwbpm.lanzoue.com/iyhrj4gu68ch"
+FALLBACK_CN_PWD = "cvre"
 
 
 def parse_version(text: str) -> tuple[int, ...]:
@@ -45,7 +50,7 @@ def is_newer(remote: str, local: str = __version__) -> bool:
 class UpdateChecker(QObject):
     """拉一次 latest.json。found / uptodate / failed 三个信号里只会来一个。"""
 
-    found = Signal(str, str)        # (远端版本, 下载页)
+    found = Signal(str, str, str, str)   # (远端版本, 下载页, 国内下载页, 提取码)
     uptodate = Signal(str)          # (当前版本)
     failed = Signal()
 
@@ -91,7 +96,9 @@ class UpdateChecker(QObject):
             data = json.loads(body)
             remote = str(data.get("version") or "").strip()
             url = str(data.get("url") or "").strip() or \
-                "https://github.com/BianTao-noob/Minecraft-Worktimer/releases/latest"
+                "https://github.com/Tao-BlueChubbyFish/Minecraft-Worktimer/releases/latest"
+            cn_url = str(data.get("url_cn") or "").strip() or FALLBACK_CN_URL
+            cn_pwd = str(data.get("cn_password") or "").strip() or FALLBACK_CN_PWD
         except Exception:
             if self._tried == 0:
                 self._tried = 1
@@ -106,7 +113,7 @@ class UpdateChecker(QObject):
 
         self._done = True
         if is_newer(remote):
-            self.found.emit(remote, url)
+            self.found.emit(remote, url, cn_url, cn_pwd)
         else:
             self.uptodate.emit(__version__)
 
