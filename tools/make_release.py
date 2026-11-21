@@ -28,7 +28,7 @@ SKIP_DIR = {"__pycache__", ".git", ".workbuddy", "build", "dist", ".venv", "venv
 SKIP_FILE = {"config.json", "data.json", "crash.log"}
 SKIP_SUFFIX = {".pyc", ".pyo", ".log", ".spec"}
 
-REPO = "https://github.com/BianTao-noob/Minecraft-Worktimer"
+REPO = "https://github.com/Tao-BlueChubbyFish/Minecraft-Worktimer"
 
 
 def read_version() -> tuple[str, str]:
