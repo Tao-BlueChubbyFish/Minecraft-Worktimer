@@ -308,7 +308,19 @@ class InteractMixin:
         from ..dialogs import AboutDialog
 
         cumulative = self.store.cumulative_minutes(self._day, self._live_overtime())
-        AboutDialog(self, self.cfg, self.pal, self._base_s, self._dpr, cumulative).exec()
+        AboutDialog(self, self.cfg, self.pal, self._base_s, self._dpr, cumulative,
+                    known=getattr(self, "_update_ready", None)).exec()
+
+    def check_update_silent(self) -> None:
+        """开机后悄悄问一次有没有新版。失败什么都不做——对方没装加速工具也不该被打扰。"""
+        from ..update import UpdateChecker
+
+        self._updater = UpdateChecker(self)
+        self._updater.found.connect(self._remember_update)
+        self._updater.start()
+
+    def _remember_update(self, version: str, url: str) -> None:
+        self._update_ready = (version, url)
 
     def show_stats(self) -> None:
         from ..dialogs import StatsDialog

@@ -5,7 +5,9 @@ import sys
 from datetime import datetime, time as dt_time
 
 from PySide6.QtCore import QRect, Qt
-from PySide6.QtGui import QColor, QCursor, QFont, QGuiApplication, QPainter
+from PySide6.QtCore import QUrl
+from PySide6.QtGui import (QColor, QCursor, QDesktopServices, QFont, QGuiApplication,
+                           QPainter)
 from PySide6.QtWidgets import QDialog, QPushButton, QWidget
 
 from . import __version__, __version_label__, engine, pixel_font, style, theme
@@ -392,23 +394,70 @@ class AboutDialog(MCDialog):
     所以这一项是给"会传给别人"准备的。检查更新以后也长在这里。
     """
 
-    W_UNITS = 204
-    H_UNITS = 132
+    W_UNITS = 216
+    H_UNITS = 146
     TITLE = "关于"
 
-    def __init__(self, parent, cfg, pal, S, dpr, cumulative):
+    def __init__(self, parent, cfg, pal, S, dpr, cumulative, known=None):
         self.cumulative = int(cumulative)
         self._copied = False
+        self._status = ""
+        self._remote_url = ""
+        self._checker = None
+        self._known = known              # (远端版本, 下载页)，启动时后台查到的
         super().__init__(parent, cfg, pal, S, dpr)
+        if self._known:
+            self._status = f"有新版本 v{self._known[0]}"
+            self._remote_url = self._known[1]
+
         b_copy = QPushButton("复制版本号", self)
         b_copy.setFont(self._qfont(7))
-        self._place(b_copy, 14, 110, 74, 15)
+        self._place(b_copy, 12, 124, 62, 15)
         b_copy.clicked.connect(self._copy)
+
+        self._b_check = QPushButton("去下载" if self._known else "检查更新", self)
+        self._b_check.setFont(self._qfont(7))
+        self._place(self._b_check, 78, 124, 62, 15)
+        self._b_check.clicked.connect(self._on_check_clicked)
+
         b = QPushButton("关闭", self)
         b.setFont(self._qfont(7))
         b.setDefault(True)
-        self._place(b, 132, 110, 58, 15)
+        self._place(b, 144, 124, 58, 15)
         b.clicked.connect(self.accept)
+
+    # ------------------------------------------------------------------ 检查更新
+    def _on_check_clicked(self) -> None:
+        if self._remote_url:
+            QDesktopServices.openUrl(QUrl(self._remote_url))
+            return
+        from .update import UpdateChecker
+
+        self._status = "检查中…"
+        self._b_check.setEnabled(False)
+        self.update()
+        self._checker = UpdateChecker(self)
+        self._checker.found.connect(self._on_found)
+        self._checker.uptodate.connect(self._on_uptodate)
+        self._checker.failed.connect(self._on_failed)
+        self._checker.start()
+
+    def _on_found(self, version: str, url: str) -> None:
+        self._status = f"有新版本 v{version}"
+        self._remote_url = url
+        self._b_check.setText("去下载")
+        self._b_check.setEnabled(True)
+        self.update()
+
+    def _on_uptodate(self, version: str) -> None:
+        self._status = f"已是最新 v{version}"
+        self._b_check.setEnabled(True)
+        self.update()
+
+    def _on_failed(self) -> None:
+        self._status = "连不上，稍后再试"
+        self._b_check.setEnabled(True)
+        self.update()
 
     def _copy(self) -> None:
         QGuiApplication.clipboard().setText(f"MC 工时牌 {__version_label__}（{__version__}）")
@@ -423,7 +472,8 @@ class AboutDialog(MCDialog):
                             QColor(pal["text"]), family, bold=True,
                             align="center", max_w=w)
         # 版本号给足字号：这一行就是"我在用哪一版"的答案
-        pixel_font.draw_cjk(p, 0, self.u(50), __version_label__, self.u(11),
+        # 像素字体里小写 v 会渲染成倒三角，这里用大写
+        pixel_font.draw_cjk(p, 0, self.u(50), __version_label__.upper(), self.u(11),
                             QColor(pal["accent"]), family, bold=True,
                             align="center", max_w=w)
 
@@ -440,6 +490,12 @@ class AboutDialog(MCDialog):
         pixel_font.draw_cjk(p, 0, self.u(98), tip, self.u(7),
                             QColor(pal["accent"] if self._copied else pal["text_dim"]),
                             family, align="center", max_w=w)
+
+        if self._status:
+            hit = self._status.startswith("有新版本")
+            pixel_font.draw_cjk(p, 0, self.u(110), self._status, self.u(7),
+                                QColor(pal["accent"] if hit else pal["text_dim"]),
+                                family, align="center", max_w=w)
 
 
 class StatsDialog(MCDialog):
