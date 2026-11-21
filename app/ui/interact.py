@@ -212,6 +212,10 @@ class InteractMixin:
         a_home.setEnabled(self.snap.state == engine.ST_OVERTIME
                           and self._evening_choice != "home")
         a_reset = m.addAction("重置当日计时")
+        m.addSeparator()
+        a_day = m.addAction("今日结算…")
+        a_week = m.addAction("一周…")
+        a_note = m.addAction("记一句…")
         a_stats = m.addAction(f"查看累计加班时长（{engine.humanize(cumulative)}）")
         m.addSeparator()
 
@@ -254,6 +258,9 @@ class InteractMixin:
         a_cfg.triggered.connect(self.open_settings_dialog)
         a_home.triggered.connect(lambda: self._choose("home"))
         a_reset.triggered.connect(self.reset_today)
+        a_day.triggered.connect(self.show_day)
+        a_week.triggered.connect(self.show_week)
+        a_note.triggered.connect(self.show_note)
         a_stats.triggered.connect(self.show_stats)
         a_pt.triggered.connect(self.toggle_passthrough)
         a_auto.triggered.connect(self.toggle_autostart)
@@ -329,6 +336,31 @@ class InteractMixin:
         dlg = StatsDialog(self, self.cfg, self.pal, self._base_s, self._dpr,
                           cumulative, self.store, self.snap.overtime_minutes)
         dlg.exec()
+
+    def show_day(self) -> None:
+        from datetime import datetime
+        from ..dialogs import DayDialog
+
+        dlg = DayDialog(self, self.cfg, self.pal, self._base_s, self._dpr, self.store,
+                        self.rule, datetime.now(), self._live_overtime())
+        dlg.exec()
+
+    def show_week(self) -> None:
+        from datetime import datetime
+        from ..dialogs import WeekDialog
+
+        dlg = WeekDialog(self, self.cfg, self.pal, self._base_s, self._dpr, self.store,
+                         self.rule, datetime.now(), self._live_overtime())
+        dlg.exec()
+
+    def show_note(self) -> None:
+        from ..dialogs import NoteDialog
+
+        dlg = NoteDialog(self, self.cfg, self.pal, self._base_s, self._dpr,
+                         self.store.note(self._day))
+        if dlg.exec():
+            self.store.set_note(self._day, dlg.text())
+            self.store.save()
 
 
     def toggle_autostart(self) -> None:
