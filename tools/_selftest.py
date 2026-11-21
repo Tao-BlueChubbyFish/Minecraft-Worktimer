@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import sys
 import tempfile
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -180,6 +180,88 @@ def main() -> None:
     cfg.set("schedule.workdays", _days_bak)
     cfg.save()
     print("remember ok")
+
+    # 10) v1.1 累计与周视图：只读推算，不加班的天不能漏、休息日必须留空
+    st6 = Store(tmp / "data6.json")
+    rule6 = engine.build_rule(cfg)
+    st6.set_work_start(date(2026, 11, 16), time(9, 0))
+    st6.set_work_start(date(2026, 11, 17), time(9, 0))
+    st6.set_work_start(date(2026, 11, 18), time(9, 30))
+    st6.data["ledger"]["2026-11-17"] = 45
+    st6.data["cumulative_overtime_minutes"] = 45  # 与 ledger 同步，模拟真实结算
+    base6 = int(round(rule6.onsite_hours * 60))
+    assert st6.worked_days() == 3, st6.worked_days()
+    assert st6.worked_minutes(rule6) == 3 * base6 + 45
+    assert st6.day_minutes(date(2026, 11, 19), rule6) is None, "没登记的天不该有工时"
+    assert st6.day_minutes(date(2026, 11, 17), rule6) == base6 + 45
+    # 今天有实时加班时，不能把 ledger 里那笔再加一遍（ledger 只存已结算的）
+    assert st6.day_minutes(date(2026, 11, 17), rule6, 30) == base6 + 75
+    week = st6.week_minutes(date(2026, 11, 18), rule6)
+    assert len(week) == 7 and week[0][0] == date(2026, 11, 16), "周视图没从周一起头"
+    assert week[3][1] is None, "周四没登记，应留空"
+    st6.data["days_archived"] = 10
+    assert st6.worked_days() == 13, "修剪归档的天数丢了"
+    st6.data["days_archived"] = 0
+
+    # 上周合计 / 到岗规律 / 随手小记
+    assert st6.week_total(date(2026, 11, 16), rule6, date(2026, 11, 18)) == 3 * base6 + 45
+    assert st6.week_total(date(2026, 11, 9), rule6, date(2026, 11, 18)) == 0
+    # 到岗规律：样本不足 5 天不叫"常说"
+    assert st6.typical_start(date(2026, 11, 21)) is None, "3 天样本不该说「常在」"
+    st6.set_work_start(date(2026, 11, 19), time(9, 0))
+    st6.set_work_start(date(2026, 11, 20), time(9, 0))
+    assert st6.typical_start(date(2026, 11, 21)) == time(9, 0), st6.typical_start(date(2026, 11, 21))
+    st6.set_note(date(2026, 11, 21), "今天开会开了两小时")
+    assert st6.note(date(2026, 11, 21)) == "今天开会开了两小时"
+    st6.set_note(date(2026, 11, 21), "   ")
+    assert st6.note(date(2026, 11, 21)) == "", "清空小记没生效"
+    print("totals ok")
+
+    # 11) v1.1 两个新面板：菜单项在、弹窗能画出来（不 show，直接渲染）
+    m6 = w6 = None
+    w6 = TimerWidget(cfg, Store(tmp / "data7.json"), engine.build_rule(cfg))
+    m6 = w6.build_menu()
+    labels = [a.text() for a in m6.actions()]
+    assert "今日结算…" in labels, labels
+    assert "一周…" in labels, labels
+    assert "记一句…" in labels, labels
+
+    from app.dialogs import DayDialog, NoteDialog, WeekDialog  # noqa: E402
+
+    now6 = datetime.now()
+    for cls in (DayDialog, WeekDialog):
+        dlg = cls(w6, cfg, w6.pal, w6._base_s, w6._dpr, w6.store, w6.rule, now6, 0)
+        img = QImage(dlg.width(), dlg.height(), QImage.Format.Format_ARGB32)
+        img.fill(0)
+        dlg.render(img)
+        assert not img.isNull(), f"{cls.__name__} 渲染失败"
+        dlg.close()
+
+    nd = NoteDialog(w6, cfg, w6.pal, w6._base_s, w6._dpr, "写点啥")
+    assert nd.text() == "写点啥"
+    nd.close()
+
+    # 12) 累计里程碑：第一次静默播种（过去的事不补庆祝），之后只在刚达成时响一次
+    w6.store = st6
+    st6.data["schedule"].clear()
+    for i in range(10):
+        st6.data["schedule"][(date(2026, 10, 1) + timedelta(days=i)).isoformat()] = "09:00"
+    st6.data["milestones"] = []
+    w6._tot_seeded = False
+    w6._tot_day = None
+    w6._check_total_milestone(datetime.now())
+    assert "d10" in st6.data["milestones"], "首次运行没把已达成的静默记为已响"
+    st6.data["milestones"].remove("d10")
+    w6._tot_day = None
+    w6._check_total_milestone(datetime.now())
+    assert "d10" in st6.data["milestones"], "满 10 天没有响"
+    w6._tot_day = None
+    said = list(st6.data["milestones"])
+    w6._check_total_milestone(datetime.now())
+    assert st6.data["milestones"] == said, "同一个里程碑响了两次"
+    print("milestone ok")
+
+    print("panels ok")
 
     print("ALL OK")
 
