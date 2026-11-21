@@ -58,6 +58,7 @@ class ClockMixin:
         if not self._animating and self.cfg.get("ui.sod_roll_idle", True):
             self._roll_phase += float(self.cfg.get("ui.sod_roll_idle_speed", 0.012) or 0.012)
         self._check_milestones()
+        self._check_total_milestone(now)
         self._check_life(now)
         self._update_evening()
         self._sync_rain_timer()
@@ -243,6 +244,51 @@ class ClockMixin:
                 self._greet_until = _time.perf_counter() + 8.0
                 break
 
+
+    TOTAL_DAYS = (10, 50, 100, 365)
+    TOTAL_HOURS = (100, 300, 500, 1000)
+
+    def _check_total_milestone(self, now: datetime) -> None:
+        """累计里程碑：记满 N 天 / 累计 N 小时，只响一次。
+
+        和进度条里程碑不同，这个跟「今天」无关，只跟「一共」有关。
+        按天节流；第一次运行就把已达成的记为已响——过去的事不该补庆祝一次。
+        """
+        if getattr(self, "_tot_day", None) == self._day:
+            return
+        self._tot_day = self._day
+        if not self.cfg.get("ui.fx.milestone", True):
+            return
+        done = self.store.data.setdefault("milestones", [])
+        days = self.store.worked_days()
+        hours = self.store.worked_minutes(self.rule, self._live_overtime()) // 60
+
+        if not getattr(self, "_tot_seeded", False):
+            self._tot_seeded = True
+            done.extend([f"d{n}" for n in self.TOTAL_DAYS if days >= n])
+            done.extend([f"h{n}" for n in self.TOTAL_HOURS if hours >= n])
+            self.store.save()
+            return
+
+        say = ""
+        for n in self.TOTAL_DAYS:
+            if days >= n and f"d{n}" not in done:
+                done.append(f"d{n}")
+                say = f"已经记了 {n} 天"
+                break
+        if not say:
+            for n in self.TOTAL_HOURS:
+                if hours >= n and f"h{n}" not in done:
+                    done.append(f"h{n}")
+                    say = f"累计 {n} 小时了"
+                    break
+        if not say:
+            return
+        self._start_fx("ms", 1.4)
+        self._greet_text = say
+        self._greet_until = _time.perf_counter() + 8.0
+        self.store.save()
+        self.update()
 
     def _life_events(self) -> list[int]:
         """今天的"路过"时刻表。按（日期, 上班时间）缓存，改上班时间会自动重算。"""
