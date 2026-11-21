@@ -5,6 +5,8 @@
 一个贴着桌面右下角的 Minecraft 风格小木牌：无边框、置顶、可拖动，右键临时穿透，
 每天登记上班时间，实时算「距离下班」和「今日已加班」。
 
+> 界面目前仅支持简体中文（The UI is currently Chinese only）。
+
 ![风格](https://img.shields.io/badge/style-Minecraft%20pixel%20art-7da04b) ![平台](https://img.shields.io/badge/platform-Windows%2010%2F11-1b1b1b) ![框架](https://img.shields.io/badge/GUI-PySide6-4f7d2f)
 
 ## 它长什么样
@@ -114,7 +116,7 @@ pythonw main.py
 详细环境、参数、数据格式见 [环境配置说明.md](docs/环境配置说明.md)。
 打包单文件 exe 见同级 `打包工程` 文件夹。
 
-> `启动.bat`（走 Python）和 `MCWorkTimer_v1.0.exe`（免安装）的 `data.json` 不在同一个目录，
+> `启动.bat`（走 Python）和 `MCWorkTimer_*.exe`（免安装）的 `data.json` 不在同一个目录，
 > 挑一个长期用，不要混着开，否则加班台账会分成两份。
 
 ## 还想看细节
