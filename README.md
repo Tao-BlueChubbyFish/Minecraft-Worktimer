@@ -123,4 +123,15 @@ pythonw main.py
   513 句文案怎么分、代码结构与技术要点
   → [docs/美术与实现细节.md](docs/美术与实现细节.md)
 
+## 版权与开源协议 / License & Copyright
 
+© 2026 Tao-BlueChubbyFish. All rights reserved.
+
+本项目采用 **AGPL v3.0** 协议开源。
+
+**任何个人或组织在使用、修改、分发本项目代码，或将其部署为网络服务（包括商业用途）时，必须严格遵循以下要求：**
+
+1. **必须署名**：保留原作者的版权声明（即 © 2026 Tao-BlueChubbyFish）。
+2. **强制开源**：修改后的衍生代码必须同样以 AGPL v3.0 协议开源，并公开完整的源代码。
+
+*本项目是一个独立的计时器工具，UI 风格致敬 Minecraft，与 Mojang Studios 或 Microsoft 无任何从属关系。*
