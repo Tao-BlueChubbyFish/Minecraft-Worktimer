@@ -2,13 +2,13 @@
 from __future__ import annotations
 
 import sys
-from datetime import datetime, time as dt_time
+from datetime import datetime, timedelta, time as dt_time
 
 from PySide6.QtCore import QRect, Qt
 from PySide6.QtCore import QUrl
 from PySide6.QtGui import (QColor, QCursor, QDesktopServices, QFont, QGuiApplication,
                            QPainter)
-from PySide6.QtWidgets import QDialog, QPushButton, QWidget
+from PySide6.QtWidgets import QDialog, QLineEdit, QPushButton, QWidget
 
 from . import __version__, __version_label__, engine, pixel_font, style, theme
 from .base_window import DragMixin, PixelCanvas
@@ -404,6 +404,7 @@ class AboutDialog(MCDialog):
         self._status = ""
         self._remote_url = ""
         self._checker = None
+        self._cn = ("", "")
         self._known = known              # (远端版本, 下载页)，启动时后台查到的
         super().__init__(parent, cfg, pal, S, dpr)
         if self._known:
@@ -442,9 +443,11 @@ class AboutDialog(MCDialog):
         self._checker.failed.connect(self._on_failed)
         self._checker.start()
 
-    def _on_found(self, version: str, url: str) -> None:
+    def _on_found(self, version: str, url: str, cn_url: str = "", cn_pwd: str = "") -> None:
+        # 默认走 GitHub（正式、无密码）；蓝奏云留在连不上时兜底
         self._status = f"有新版本 v{version}"
         self._remote_url = url
+        self._cn = (cn_url, cn_pwd)
         self._b_check.setText("去下载")
         self._b_check.setEnabled(True)
         self.update()
@@ -455,7 +458,15 @@ class AboutDialog(MCDialog):
         self.update()
 
     def _on_failed(self) -> None:
-        self._status = "连不上，稍后再试"
+        # 连不上多半是 GitHub 在国内被墙。程序下不了，就交给浏览器 + 蓝奏云：
+        # 蓝奏云国内秒开，但要输提取码，所以提取码直接写在状态里。
+        from .update import FALLBACK_CN_PWD, FALLBACK_CN_URL
+
+        cn_url, cn_pwd = getattr(self, "_cn", ("", ""))
+        self._remote_url = cn_url or FALLBACK_CN_URL
+        pwd = cn_pwd or FALLBACK_CN_PWD
+        self._status = f"连不上，蓝奏云下载（密码 {pwd}）"
+        self._b_check.setText("去蓝奏云")
         self._b_check.setEnabled(True)
         self.update()
 
@@ -562,6 +573,260 @@ class StatsDialog(MCDialog):
                                 QColor(pal["text"]), family,
                                 align="right", max_w=right)
             y += 10
+
+
+class DayDialog(MCDialog):
+    """今日结算：只讲工作本身，不写花草。
+
+    顶上那行是「累计」——用「一共干了多少天、多少小时」代替「连续准点几天」：
+    弹性制没有标准上班时刻，说准点没意义；累计是真实发生过的，谁也赖不掉。
+    累计工时按「标准在岗时长 × 登记天数 + 累计加班」推算，因为不加班的日子
+    根本不落 ledger，没法逐日累加。这是估算，但方向永远单调向上。
+
+    底下三件才是「记事」：我常几点到、今天怎么样、今天想说什么。
+    高度按内容算，没有内容就不留空行。
+    """
+
+    W_UNITS = 208
+    TITLE = "今日结算"
+
+    def __init__(self, parent, cfg, pal, S, dpr, store, rule, now, live_ot):
+        self.store = store
+        self.rule = rule
+        self.now = now
+        self.live_ot = max(0, int(live_ot))
+        self._st = self._stat()
+        self._rows_cache = self._rows()
+        self._verdict = self._make_verdict()
+        self._note = self.store.note(self.now.date())
+        self.H_UNITS = (82 + 12 * len(self._rows_cache)
+                        + (14 if self._verdict else 0)
+                        + (12 if self._note else 0) + 28)
+        super().__init__(parent, cfg, pal, S, dpr)
+        b = QPushButton("关闭", self)
+        b.setFont(self._qfont(7))
+        self._place(b, 74, self.H_UNITS - 24, 60, 15)
+        b.clicked.connect(self.accept)
+
+    # ------------------------------------------------------------------
+    def _stat(self) -> dict:
+        today = self.now.date()
+        start = self.store.work_start(today)
+        st = {"start": start, "off": None, "effective": 0, "diff": None}
+        if start is None:
+            return st
+        off = engine.offwork_at(today, start, self.rule)
+        st["off"] = off
+        seated = max(0, int((self.now - datetime.combine(today, start)).total_seconds() // 60))
+        lunch = int(self.rule.lunch_overlap_minutes(start, self.now.time()))
+        st["effective"] = max(0, seated - lunch)
+        # 只有过了下班点，和昨天比才公平：否则拿半天比人家一整天，永远显示负数
+        yday = self.store.day_minutes(today - timedelta(days=1), self.rule)
+        if yday is not None and self.now >= off:
+            st["diff"] = st["effective"] - yday
+        return st
+
+    def _rows(self) -> list[tuple[str, str]]:
+        """今天的三四行就够了。数据不全的不出现，不留 0 和 —。
+
+        不列「本周累计」：一周面板里有合计，这里再写一遍只是把面板塞满。
+        不列「对比昨天」：短评已经说了"比昨天早走/晚走"，同一件事说两遍。
+        """
+        st = self._st
+        start = st["start"]
+        if start is None:
+            return [("到岗", "还没登记")]
+        off = st["off"]
+        rows = [
+            ("在岗时段", f"{start.strftime('%H:%M')} → {off.strftime('%H:%M')}"),
+            ("有效工时", engine.humanize(st["effective"])),
+        ]
+        if self.live_ot:
+            rows.append(("今日加班", engine.humanize(self.live_ot)))
+        typical = self.store.typical_start(self.now.date())
+        if typical is not None:
+            rows.append(("常在", f"{typical.strftime('%H:%M')} 前后到岗"))
+        return rows
+
+    def _make_verdict(self) -> str:
+        """一句实话。上班中间不评价——那时候说什么都像催促。"""
+        st = self._st
+        if st["start"] is None:
+            return ""
+        if self.now < st["off"]:
+            return ""
+        if self.live_ot >= 60:
+            return "今天多干了不少，早点睡"
+        if self.live_ot > 0:
+            return "加了会儿，不算多"
+        diff = st["diff"]
+        if diff is not None and diff <= -30:
+            return "比昨天早走，挺好"
+        if diff is not None and diff >= 30:
+            return "比昨天晚走，明天早点"
+        return "今天没吃亏"
+
+    def render_body(self, p: QPainter, w: int, h: int) -> None:
+        pal = self.pal
+        S = self.S
+        family = self.family
+
+        days = self.store.worked_days()
+        total = self.store.worked_minutes(self.rule, self.live_ot)
+        th, tm = divmod(int(total), 60)
+
+        pixel_font.draw_cjk(p, self.u(14), self.u(28), "累计", self.u(8),
+                            QColor(pal["text_dim"]), family)
+
+        k = max(2, S * 2)
+        pixel_font.draw_items(p, self.u(self.W_UNITS // 2), self.u(54),
+                              [("b", f"{days}", k), ("g", self.u(5)),
+                               ("c", "天", self.u(12))],
+                              QColor(pal["accent"]), family)
+        pixel_font.draw_cjk(p, self.u(14), self.u(60),
+                            f"共 {th} 小时 {tm} 分", self.u(8),
+                            QColor(pal["text"]), family, align="center",
+                            max_w=w - self.u(28))
+
+        theme.fill(p, self.u(14), self.u(72), w - self.u(28), S, QColor(pal["bevel_dark"]))
+
+        right = self.u(self.W_UNITS - 14)
+        y = 82
+        for label, value in self._rows_cache:
+            pixel_font.draw_cjk(p, self.u(14), self.u(y), label, self.u(8),
+                                QColor(pal["text_dim"]), family)
+            pixel_font.draw_cjk(p, 0, self.u(y), value, self.u(8),
+                                QColor(pal["text"]), family,
+                                align="right", max_w=right)
+            y += 12
+
+        y = 82 + 12 * len(self._rows_cache)
+        if self._verdict:
+            theme.fill(p, self.u(14), self.u(y), w - self.u(28), S,
+                       QColor(pal["bevel_dark"]))
+            pixel_font.draw_cjk(p, self.u(14), self.u(y + 6), self._verdict, self.u(8),
+                                QColor(pal["accent"]), family)
+            y += 14
+        if self._note:
+            text = self._note if len(self._note) <= 22 else self._note[:21] + "…"
+            pixel_font.draw_cjk(p, self.u(14), self.u(y + 3), f"记：{text}", self.u(7),
+                                QColor(pal["text_dim"]), family, max_w=w - self.u(28))
+
+
+class WeekDialog(MCDialog):
+    """一周：七天各一根柱子，柱高就是当天的有效工时。
+
+    比七行数字好读——哪几天长、哪几天短，一眼分得出来。
+    超出标准工时的天用亮色，不加文字标注：这个尺度下字最容易读错。
+    """
+
+    W_UNITS = 208
+    H_UNITS = 172
+    TITLE = "一周"
+
+    def __init__(self, parent, cfg, pal, S, dpr, store, rule, now, live_ot):
+        self.store = store
+        self.rule = rule
+        self.now = now
+        self.live_ot = max(0, int(live_ot))
+        super().__init__(parent, cfg, pal, S, dpr)
+        b = QPushButton("关闭", self)
+        b.setFont(self._qfont(7))
+        self._place(b, 74, 150, 60, 15)
+        b.clicked.connect(self.accept)
+
+    def render_body(self, p: QPainter, w: int, h: int) -> None:
+        pal = self.pal
+        S = self.S
+        family = self.family
+        today = self.now.date()
+        week = self.store.week_minutes(today, self.rule, self.live_ot)
+        base = max(1, int(round(self.rule.onsite_hours * 60)))
+        total = sum(v for _, v in week if v)
+        th, tm = divmod(int(total), 60)
+
+        pixel_font.draw_cjk(p, self.u(14), self.u(28), "本周", self.u(8),
+                            QColor(pal["text_dim"]), family)
+        pixel_font.draw_cjk(p, self.u(14), self.u(38), f"共 {th} 小时 {tm} 分",
+                            self.u(9), QColor(pal["text"]), family)
+
+        # 和上周比：让人看见趋势，而不只是本周的形状
+        last = self.store.week_total(today - timedelta(days=today.weekday() + 7),
+                                     self.rule, today, self.live_ot)
+        if last:
+            diff = total - last
+            if abs(diff) < 5:
+                trend = "和上周差不多"
+            else:
+                trend = f"比上周{'多' if diff > 0 else '少'} {engine.humanize(abs(diff))}"
+            pixel_font.draw_cjk(p, self.u(14), self.u(52), trend, self.u(8),
+                                QColor(pal["text_dim"]), family)
+
+        bottom = self.u(124)
+        top = self.u(78)
+        max_h = bottom - top
+        bw = self.u(20)
+        gap = self.u(5)
+        x0 = self.u(16)
+        for i, (d, mins) in enumerate(week):
+            x = x0 + i * (bw + gap)
+            if mins is None:
+                theme.fill(p, x, bottom - S, bw, S, QColor(pal["track"][1]))
+            else:
+                bar = max(S, int(max_h * min(1.0, mins / base * 0.9)))
+                color = pal["fill_light"] if mins > base else pal["fill"][1]
+                theme.fill(p, x, bottom - bar, bw, bar, QColor(color))
+                if d == today:
+                    theme.fill(p, x, bottom - bar, bw, max(2, S), QColor(pal["bevel_light"]))
+            pixel_font.draw_cjk(p, x, self.u(128), _DAY_CH[i], self.u(8),
+                                QColor(pal["accent"] if d == today else pal["text_dim"]),
+                                family, align="center", max_w=bw)
+
+        pixel_font.draw_cjk(p, self.u(14), self.u(140), "亮色 = 超出标准工时",
+                            self.u(7), QColor(pal["text_dim"]), family)
+
+
+class NoteDialog(MCDialog):
+    """随手记一句：今天想说的，不必是工作。
+
+    存进 data.json 的 notes，按天一条，跟着 schedule 一起被修剪。
+    「今日结算」底部会显示今天那句——它和工作数据不是一类东西，所以另起一行。
+    """
+
+    W_UNITS = 208
+    H_UNITS = 104
+    TITLE = "记一句"
+    SHOW_ICON = False
+
+    def __init__(self, parent, cfg, pal, S, dpr, text: str = ""):
+        super().__init__(parent, cfg, pal, S, dpr)
+        self.edit = QLineEdit(self)
+        self.edit.setFont(self._qfont(8))
+        self.edit.setMaxLength(60)
+        self.edit.setPlaceholderText("今天……")
+        self.edit.setText(text or "")
+        self.edit.setStyleSheet(
+            f"QLineEdit{{background:{pal['panel_shade'][0]};color:{pal['text']};"
+            f"border:2px solid {pal['bevel_dark']};padding:2px 4px;}}"
+        )
+        self._place(self.edit, 14, 30, self.W_UNITS - 28, 18)
+
+        b_clear = QPushButton("清空", self)
+        b_clear.setFont(self._qfont(7))
+        self._place(b_clear, 14, 76, 60, 15)
+        b_clear.clicked.connect(self._clear)
+        b_ok = QPushButton("记住", self)
+        b_ok.setFont(self._qfont(7))
+        self._place(b_ok, 134, 76, 60, 15)
+        b_ok.clicked.connect(self.accept)
+        self.edit.setFocus()
+
+    def _clear(self) -> None:
+        self.edit.setText("")
+        self.accept()
+
+    def text(self) -> str:
+        return self.edit.text().strip()
 
 
 def confirm(parent, cfg, pal, S, dpr, title, message) -> bool:
