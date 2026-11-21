@@ -5,7 +5,7 @@
 """
 from __future__ import annotations
 
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
 from . import engine, util
@@ -35,7 +35,10 @@ class Store:
             "first_run": raw.get("first_run") or date.today().isoformat(),
             "max_single_day": int(raw.get("max_single_day", 0) or 0),
             "days_counted": int(raw.get("days_counted", 0) or 0),
+            "days_archived": int(raw.get("days_archived", 0) or 0),
             "evening": dict(raw.get("evening") or {}),
+            "notes": dict(raw.get("notes") or {}),
+            "milestones": list(raw.get("milestones") or []),
         }
 
     def save(self) -> None:
@@ -158,6 +161,88 @@ class Store:
         return [(k, int(v)) for k, v in items[:limit]]
 
     # ------------------------------------------------------------------
+    # 累计与周视图（v1.1）：只读，不改任何落盘结构。
+    # 累计工时按「标准在岗时长 × 登记天数 + 累计加班」推算：
+    # 不加班的日子不写 ledger，没法逐日累加，只能这样算。
+    def worked_days(self) -> int:
+        """累计上班天数 = 保留期内的登记天数 + 已被修剪归档的天数。"""
+        return len(self.data["schedule"]) + int(self.data.get("days_archived", 0) or 0)
+
+    def worked_minutes(self, rule: engine.Rule, live_today_overtime: int = 0) -> int:
+        """累计有效工时（分钟）。"""
+        base = int(round(rule.onsite_hours * 60))
+        return (
+            self.worked_days() * base
+            + int(self.data.get("cumulative_overtime_minutes", 0) or 0)
+            + max(0, int(live_today_overtime))
+        )
+
+    def day_minutes(
+        self, d: date, rule: engine.Rule, live_overtime: int = 0
+    ) -> int | None:
+        """某天的有效工时。那天没登记上班就返回 None（周视图里留空）。"""
+        if self.work_start(d) is None:
+            return None
+        base = int(round(rule.onsite_hours * 60))
+        ot = int(self.data["ledger"].get(self._key(d), 0) or 0) + max(0, int(live_overtime))
+        return base + ot
+
+    def week_minutes(
+        self, today: date, rule: engine.Rule, live_today_overtime: int = 0
+    ) -> list[tuple[date, int | None]]:
+        """本周七天的有效工时，周一打头。"""
+        monday = today - timedelta(days=today.weekday())
+        out: list[tuple[date, int | None]] = []
+        for i in range(7):
+            d = monday + timedelta(days=i)
+            live = live_today_overtime if d == today else 0
+            out.append((d, self.day_minutes(d, rule, live)))
+        return out
+
+    def week_total(self, monday: date, rule: engine.Rule, today: date,
+                   live_today_overtime: int = 0) -> int:
+        """某一周的合计（周一起算七天）。"""
+        total = 0
+        for i in range(7):
+            d = monday + timedelta(days=i)
+            v = self.day_minutes(d, rule, live_today_overtime if d == today else 0)
+            if v:
+                total += v
+        return total
+
+    def typical_start(self, ref: date, days: int = 30) -> time | None:
+        """最近 N 天到岗时间的中间值——「我通常几点到」。
+
+        用中位数不用平均数：偶发的 06:00 或 10:30 会把平均值拽走，中位数不会。
+        样本少于 5 天不叫"常说"——刚装上的头几天说「常在 09:00 到岗」是假话。
+        """
+        vals: list[int] = []
+        for i in range(days):
+            t = self.work_start(ref - timedelta(days=i))
+            if t is not None:
+                vals.append(t.hour * 60 + t.minute)
+        if len(vals) < 5:
+            return None
+        vals.sort()
+        mid = vals[len(vals) // 2]
+        return time(mid // 60, mid % 60)
+
+    # ------------------------------------------------------------------
+    def note(self, d: date) -> str:
+        """当天随手记的一句话。"""
+        return str((self.data.get("notes") or {}).get(self._key(d)) or "")
+
+    def set_note(self, d: date, text: str) -> None:
+        notes = self.data.setdefault("notes", {})
+        k = self._key(d)
+        text = (text or "").strip()[:60]
+        if text:
+            notes[k] = text
+        else:
+            notes.pop(k, None)
+        self._prune()
+
+    # ------------------------------------------------------------------
     def evening_choice(self, d: date) -> str | None:
         """今天下班时选过什么：'home'（回家）/ 'overtime'（继续加班）/ None。"""
         rec = self.data["evening"].get(self._key(d)) or {}
@@ -179,7 +264,11 @@ class Store:
         self.data["window"] = {"x": int(x), "y": int(y)}
 
     def _prune(self) -> None:
-        for bucket in ("schedule", "ledger", "evening"):
+        for bucket in ("schedule", "ledger", "evening", "notes"):
             keys = sorted(self.data[bucket].keys())
             for k in keys[:-KEEP_DAYS]:
-                self.data[bucket].pop(k, None)
+                if self.data[bucket].pop(k, None) is None:
+                    continue
+                if bucket == "schedule":
+                    # 修剪掉的登记日仍算在累计里，否则「用了多少天」会随时间倒退
+                    self.data["days_archived"] = int(self.data.get("days_archived", 0) or 0) + 1
