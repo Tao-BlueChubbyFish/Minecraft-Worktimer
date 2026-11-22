@@ -476,18 +476,32 @@ class AboutDialog(MCDialog):
         self._remote_url = ""
         self._checker = None
         self._cn = ("", "")
-        self._known = known              # (远端版本, 下载页)，启动时后台查到的
+        # 后台查到的更新信息：{version, url, cn_url, cn_pwd, asset, size}
+        info = dict(known) if isinstance(known, dict) else (
+            {"version": known[0], "url": known[1]} if known else {})
+        self._info = info
+        self._remote_url = str(info.get("url") or "")
+        self._asset = str(info.get("asset") or "")
+        self._size = int(info.get("size") or 0)
+        self._v_remote = str(info.get("version") or "")
+        self._fetcher = None
+        self._mode = "idle"              # idle / downloading / saved / failed
+        self._hint = ""
+        self._folder = ""
+        self._pct = -1
         super().__init__(parent, cfg, pal, S, dpr)
-        if self._known:
-            self._status = f"有新版本 v{self._known[0]}"
-            self._remote_url = self._known[1]
+        if info:
+            from .update import short_label
+
+            self._status = f"有新版本 {short_label(self._v_remote)}"
 
         b_copy = QPushButton("复制版本号", self)
         b_copy.setFont(self._qfont(7))
         self._place(b_copy, 12, 124, 62, 15)
         b_copy.clicked.connect(self._copy)
 
-        self._b_check = QPushButton("去下载" if self._known else "检查更新", self)
+        self._b_check = QPushButton(
+            "下载更新" if self._asset else ("去下载" if self._info else "检查更新"), self)
         self._b_check.setFont(self._qfont(7))
         self._place(self._b_check, 78, 124, 62, 15)
         self._b_check.clicked.connect(self._on_check_clicked)
@@ -500,6 +514,15 @@ class AboutDialog(MCDialog):
 
     # ------------------------------------------------------------------ 检查更新
     def _on_check_clicked(self) -> None:
+        if self._mode == "downloading":
+            self._fetcher and self._fetcher.cancel()
+            return
+        if self._mode == "saved":
+            self._open_folder()
+            return
+        if self._mode == "idle" and self._asset:
+            self._start_download()
+            return
         if self._remote_url:
             QDesktopServices.openUrl(QUrl(self._remote_url))
             return
@@ -514,12 +537,87 @@ class AboutDialog(MCDialog):
         self._checker.failed.connect(self._on_failed)
         self._checker.start()
 
+    # ------------------------------------------------------------------ 一键下载
+    def _start_download(self) -> None:
+        """把新 exe 下到旧 exe 旁边，不碰任何数据文件。
+
+        不做自我替换：本程序正开着，Windows 不允许删/覆盖它自己。所以退一步——
+        文件放到位，用户关掉它、双击新的，两步。
+        """
+        from .update import UpdateFetcher
+
+        self._mode = "downloading"
+        self._pct = -1
+        self._hint = ""
+        self._status = "下载中…"
+        self._b_check.setText("取消")
+        self.update()
+
+        f = UpdateFetcher(self, self._asset, self._size, self._v_remote)
+        f.progress.connect(self._on_progress)
+        f.done.connect(self._on_download_done)
+        f.failed.connect(self._on_download_failed)
+        self._fetcher = f
+        f.start()
+
+    def _on_progress(self, got: int, total: int) -> None:
+        # 百分比变了才重绘：下载进度一来就是几百次，每次重画整窗不划算
+        pct = int(got * 100 / total) if total > 0 else -1
+        if pct == self._pct:
+            return
+        self._pct = pct
+        mb = got / (1024 * 1024)
+        self._status = f"下载中 {pct}%（{mb:.1f} MB）" if pct >= 0 else f"下载中 {mb:.1f} MB"
+        self.update()
+
+    def _on_download_done(self, path: str) -> None:
+        import os
+
+        self._fetcher = None
+        self._mode = "saved"
+        self._folder = os.path.dirname(path)
+        self._status = f"已下好 {os.path.basename(path)}"
+        self._hint = "关掉我，双击新的那个；设置和台账都还在"
+        self._b_check.setText("打开文件夹")
+        self._b_check.setEnabled(True)
+        self.update()
+
+    def _on_download_failed(self, why: str) -> None:
+        self._fetcher = None
+        self._mode = "failed"
+        self._status = why
+        self._hint = "也可以点右边，去网页手动下"
+        self._b_check.setText("去下载")
+        self._b_check.setEnabled(True)
+        self.update()
+
+    def _open_folder(self) -> None:
+        if self._folder:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(self._folder))
+
+    def closeEvent(self, event):  # noqa: N802
+        # 下载中关窗 = 放弃：取消会顺手把半截文件删掉，不留个坏 exe 在文件夹里
+        if self._mode == "downloading" and self._fetcher is not None:
+            self._fetcher.cancel()
+        super().closeEvent(event)
+
+    def reject(self) -> None:
+        if self._mode == "downloading" and self._fetcher is not None:
+            self._fetcher.cancel()
+        super().reject()
+
     def _on_found(self, version: str, url: str, cn_url: str = "", cn_pwd: str = "") -> None:
         # 默认走 GitHub（正式、无密码）；蓝奏云留在连不上时兜底
-        self._status = f"有新版本 v{version}"
+        from .update import short_label
+
+        self._status = f"有新版本 {short_label(version)}"
         self._remote_url = url
         self._cn = (cn_url, cn_pwd)
-        self._b_check.setText("去下载")
+        self._v_remote = version
+        self._asset = getattr(self._checker, "asset_url", "") or ""
+        self._size = int(getattr(self._checker, "asset_size", 0) or 0)
+        self._mode = "idle"
+        self._b_check.setText("下载更新" if self._asset else "去下载")
         self._b_check.setEnabled(True)
         self.update()
 
@@ -570,13 +668,18 @@ class AboutDialog(MCDialog):
         pixel_font.draw_cjk(p, 0, self.u(84), total, self.u(8),
                             QColor(pal["text"]), family, align="center", max_w=w)
 
-        tip = "已复制到剪贴板" if self._copied else "陪你数完今天，就下班。"
-        pixel_font.draw_cjk(p, 0, self.u(98), tip, self.u(7),
-                            QColor(pal["accent"] if self._copied else pal["text_dim"]),
-                            family, align="center", max_w=w)
+        if self._hint:
+            # 下载相关的说明占掉"陪你数完今天"那一行：两行字刚好说清"下一步做什么"
+            pixel_font.draw_cjk(p, 0, self.u(98), self._hint, self.u(7),
+                                QColor(pal["text_dim"]), family, align="center", max_w=w)
+        else:
+            tip = "已复制到剪贴板" if self._copied else "陪你数完今天，就下班。"
+            pixel_font.draw_cjk(p, 0, self.u(98), tip, self.u(7),
+                                QColor(pal["accent"] if self._copied else pal["text_dim"]),
+                                family, align="center", max_w=w)
 
         if self._status:
-            hit = self._status.startswith("有新版本")
+            hit = self._status.startswith(("有新版本", "已下好"))
             pixel_font.draw_cjk(p, 0, self.u(110), self._status, self.u(7),
                                 QColor(pal["accent"] if hit else pal["text_dim"]),
                                 family, align="center", max_w=w)

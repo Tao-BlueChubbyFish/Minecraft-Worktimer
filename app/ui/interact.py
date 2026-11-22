@@ -579,8 +579,15 @@ class InteractMixin:
         self._updater.found.connect(self._remember_update)
         self._updater.start()
 
-    def _remember_update(self, version: str, url: str) -> None:
-        self._update_ready = (version, url)
+    def _remember_update(self, version: str, url: str,
+                         cn_url: str = "", cn_pwd: str = "") -> None:
+        # 关于窗要拿这些去拼"一键下载"：直链和字节数在 checker 上，不在信号里
+        self._update_ready = {
+            "version": version, "url": url,
+            "cn_url": cn_url, "cn_pwd": cn_pwd,
+            "asset": getattr(self._updater, "asset_url", ""),
+            "size": getattr(self._updater, "asset_size", 0),
+        }
 
     def show_stats(self) -> None:
         from ..dialogs import StatsDialog
