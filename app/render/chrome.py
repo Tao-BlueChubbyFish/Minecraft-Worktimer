@@ -93,45 +93,87 @@ def iso_block(pal: dict, size: int = 16, seed: int = 5) -> QImage:
 
 def _snow_cap(p: QPainter, x: int, y: int, w: int, h: int, s: int,
               keep_clear: tuple[int, int] | None = None,
-              clear_max: int = 3, cap: int = 6) -> None:
-    """草尖积雪：有厚度的雪层，不是一条白边。
+              clear_max: int = 3, cap: int = 7,
+              skip: tuple[int, int] | None = None,
+              pal: dict | None = None) -> None:
+    """草尖积雪。
 
-    四条规则：
-    1. **厚度要有量**——1~2 单位像贴了一条白胶带，会被当成画错的边框；压到 3~6 单位才读得出是雪。
-    2. **顶上亮、中间白**——最上面 1 单位用纯白，受光的一面朝上，雪才有圆头的感觉。
-    3. **下沿压 1 单位冷灰影**——没有影子，雪就只是白块；有影子，雪才是压在草上的东西。
-    4. **标题那一带压薄**——`keep_clear` 是标题文字的横坐标范围，那里雪只留 2 单位，
-       否则白字压在白雪上读不出来。两端照常堆厚，看起来正好是"雪被窗户中间挡住"的自然样子。
+    1. **雪层薄、边沿平**——结冰的雪面是平的。厚雪加锯齿边只会糊成一片毛边。
+    2. **轮廓走低频起伏**——每 3~5 列一个节点、中间斜着插值。整列随机会成毛刺，
+       按块切长台又读成"白砖"，只有低频噪声两头都不占。
+    3. **明度真拉开**——最上面纯白受光，往下三档一路压暗到 `snow_edge`；
+       五档全挤在近白里等于没有层次。
 
-    厚度按列跳变（0.45 的概率重新抽），于是起伏是成片的，不是逐列抖动的锯齿。
+    `keep_clear` 是标题文字的横坐标范围，那一带雪压到 `clear_max`，
+    两侧各铺一段斜坡接回去。
+    `skip` 是左上角草方块那一段：整段不积雪——方块是斜的，
+    雪从它四个角露出来，看着就像方块被冻在冰里。
     """
-    snow = QColor("#dbe8f8")
-    snow_top = QColor("#ffffff")
-    shade = QColor("#7d93a7")
+    # 五档冷暖拉开的雪：纯白受光面 → 雪体 → 逼近底沿越来越冷。
+    # 原来五档都挤在近白里，等于没层次；层次要读得出来，明度必须真拉开。
+    white = QColor("#ffffff")
+    snow_hi = QColor("#eaf4ff")
+    snow = QColor("#d3e5f7")
+    snow_deep = QColor("#b6cee6")
+    snow_edge = QColor("#97b3d0")
     rows = max(1, h // s)
     n = max(1, w // s)
-    max_h = max(2, min(rows - 1, cap))
+    # 三道上限：别压到泥土、别超过档位给的天数、也别把草皮条吃光。
+    # 最后一道是给紧凑档的——它的草皮条只有 12 行，厚度照搬标准档就成了"一片白"。
+    max_h = max(2, min(rows - 3, cap, max(2, int(rows * 0.72))))
     rng = random.Random(n * 131 + 7)
-    thick = min(max_h, 4)
-    i = 0
-    while i < n:
-        if rng.random() < 0.45:
-            thick = rng.randint(min(3, max_h), max_h)
+
+    # 1) 雪层：一块一块的长台，不是逐列锯齿——雪堆本来就是块状的
+    # 厚度走低频起伏：一列一列地斜着变，不出现垂直断口——方块台面的竖直边
+    # 在这个尺寸下读成"一块块白砖"，这是最难看的形态。
+    # 用"每 3~5 列取一个随机高度、中间按比例插值"的噪声：轮廓不规则，
+    # 但过渡是斜的——既不是整列随机的毛刺，也不是等周期的波纹。
+    block = rng.randint(3, 5)
+    knots = [rng.randint(max(2, max_h - 3), max_h)
+             for _ in range(n // block + 3)]
+    for i in range(n):
+        pos = i / block
+        k0 = int(pos)
+        frac = pos - k0
+        t = int(round(knots[k0] + (knots[min(k0 + 1, len(knots) - 1)] - knots[k0]) * frac))
         px = x + i * s
-        lim = max_h
-        if keep_clear is not None and keep_clear[0] <= px < keep_clear[1]:
-            lim = min(max_h, clear_max)
-        t = min(thick, lim)
+        t = max(2, min(t, max_h))
+        if skip is not None and skip[0] - s <= px < skip[1] + s:
+            t = 0                            # 草方块连同左右各一格：一点雪都不留
+        elif keep_clear is not None:
+            a, b = keep_clear
+            ramp = 14 * s                    # 往标题两边各铺 14 格的坡：坡短了就是断崖
+            if a <= px < b:
+                t = min(t, clear_max)
+            elif a - ramp <= px < a:
+                k = (a - px) / ramp
+                t = min(t, int(round(clear_max + (max_h - clear_max) * k)))
+            elif b <= px < b + ramp:
+                k = (px - b) / ramp
+                t = min(t, int(round(clear_max + (max_h - clear_max) * k)))
+        # 五档按"占这一列雪厚的比例"分，不按固定行数分：
+        # 雪薄时上下几档挨着，雪厚时每档各自铺开——不然加厚以后中间一长条
+        # 全是同一个色，看着就是一块白板。
+        last = max(1, t - 1)
         for k in range(t):
-            fill(p, px, y + k * s, s, s, snow_top if k == 0 else snow)
-        if t < rows:
-            fill(p, px, y + t * s, s, s, shade)
-        i += 1
+            f = k / last
+            if k == 0:
+                col = white
+            elif f < 0.35:
+                col = snow_hi
+            elif f < 0.70:
+                col = snow
+            elif f < 0.92:
+                col = snow_deep
+            else:
+                col = snow_edge
+            fill(p, px, y + k * s, s, s, col)
 
 
 def draw_grass_strip(p: QPainter, w: int, h_px: int, s: int, pal: dict,
                      keep_clear: tuple[int, int] | None = None,
-                     clear_max: int = 3, snow_cap: int | None = None) -> None:
+                     clear_max: int = 0, snow_cap: int | None = None,
+                     skip: tuple[int, int] | None = None) -> None:
     """顶部草皮条：草地 + 1 单位泥土 + 交界暗线。
 
     冬天在草尖上压一层厚雪（见 `_snow_cap`）。位置用固定种子，不随帧变——
@@ -144,8 +186,11 @@ def draw_grass_strip(p: QPainter, w: int, h_px: int, s: int, pal: dict,
         p.drawImage(QPoint(s, h_px - 2 * s), texture("dirt", max(1, inner_w // s), 2, s, pal))
         fill(p, s, h_px - 2 * s, inner_w, s, QColor(pal["grass"][-1]).darker(125))
         if (pal.get("_season") or "") == "winter":
-            _snow_cap(p, s, s, inner_w, max(s, grass_h), s, keep_clear, clear_max,
-                      snow_cap or 6)
+            # 0 = 这一天气温高，不积雪（见 paint.py 里的气温判断）
+            cap = 7 if snow_cap is None else snow_cap
+            if cap > 0:
+                _snow_cap(p, s, s, inner_w, max(s, grass_h), s, keep_clear, clear_max,
+                          cap, skip, pal)
 
 
 def draw_image_outlined(p: QPainter, x: int, y: int, size_px: int, img: QImage, s: int,

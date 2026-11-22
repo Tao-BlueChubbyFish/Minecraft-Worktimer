@@ -171,12 +171,22 @@ def main() -> None:
     assert w4.store.work_start(datetime.now().date()) == time(10, 15)
 
     cfg.set("schedule.remember_start", False)
+    cfg.set("schedule.setup_done", False)
     cfg.save()
     w5 = TimerWidget(cfg, Store(tmp / "data5.json"), engine.build_rule(cfg))
     called5: list[str] = []
-    w5.open_time_dialog = lambda: called5.append("dialog")
+    w5.open_settings_dialog = lambda: called5.append("setup")
+    w5.open_time_dialog = lambda: called5.append("time")
     w5._maybe_prompt_start()
-    assert called5, "没勾「记住」却不问了"
+    assert called5 == ["setup"], "第一次启动该弹完整设置窗：%r" % (called5,)
+
+    # 第二次启动：问过一次就不再打扰
+    w5b = TimerWidget(cfg, Store(tmp / "data5b.json"), engine.build_rule(cfg))
+    called5b: list[str] = []
+    w5b.open_settings_dialog = lambda: called5b.append("setup")
+    w5b.open_time_dialog = lambda: called5b.append("time")
+    w5b._maybe_prompt_start()
+    assert not called5b, "问过一次了还弹：%r" % (called5b,)
     cfg.set("schedule.workdays", _days_bak)
     cfg.save()
     print("remember ok")
@@ -223,7 +233,7 @@ def main() -> None:
     m6 = w6.build_menu()
     labels = [a.text() for a in m6.actions()]
     # 一级菜单只留高频四件事 + 两个二级入口；低频项都收进子菜单
-    assert labels[:4] == ["修改今日上班时间…", "设置…", "今天就到这（收工）", "重置当日计时"], labels
+    assert labels[:3] == ["设置…", "今天就到这（收工）", "重置当日计时"], labels
     assert "牛马日常" in labels and "外观" in labels, labels
     subs = {a.text(): a.menu() for a in m6.actions() if a.menu() is not None}
     rec = [a.text() for a in subs["牛马日常"].actions()]

@@ -16,6 +16,7 @@ from .palette import c  # noqa: E402
 from .common import fill  # noqa: E402
 
 _cloud_cache: dict[tuple, QImage] = {}
+_scaled_cache: dict[tuple, QImage] = {}   # 放大到屏幕像素的副本，每帧只 blit
 
 
 _SKY_CURVE = (
@@ -156,7 +157,19 @@ def _cloud_img(cw: int, ch: int, col: str, shade: str, seed: int) -> QImage:
     return img
 
 
-_CLOUD_SPEED = 0.45          # 单位/秒，约 7 分钟飘完一整条（"稍慢"，能看出来在动）
+# 云速：**一个屏幕像素 / 3 秒**（用户要的"几秒钟才挪一下"）。
+#
+# 这里按"像素/秒"定义，不按"单位/秒"——单位的大小随窗口档位变（大档一个单位=3像素），
+# 按单位定义的话，小档窗口里云会明显更快。按像素定义，三档看到的云一样慢。
+#
+# 附带的好处：云这么慢，晴天就不必为它开 60 帧的马达了（见 clock._sync_rain_timer），
+# 靠每秒一次的例行重绘就够——每 3 秒自然挪一格，晴天 CPU 回到接近 0。
+_CLOUD_PX_PER_SEC = 1.0 / 3.0
+
+# 每朵云各挑一档快慢：慢的六秒多才挪一格，快的不到两秒一格，中间差五倍。
+# 整片天一起平移最假，几朵云各飘各的才像空中真有东西在走。
+# 步长始终锁在 1 像素，所以差的是"多久挪一下"，不是"一下跳多远"——不会出现某朵云在飞。
+_CLOUD_SPEEDS = (0.4, 0.75, 1.3, 2.2)
 
 
 def _draw_sky(p: QPainter, ix: int, iy: int, iw: int, sky_u: int, s: int,
@@ -190,20 +203,32 @@ def _draw_sky(p: QPainter, ix: int, iy: int, iw: int, sky_u: int, s: int,
     total = iw / s
     rng = random.Random(seed_day * 97 + 13)
     tall = sky_u >= 14                      # 天空加高之后，云也得跟着长，否则一片空
+    # 先洗一遍快慢档：保证同一天里必定有快的也有慢的，不靠运气
+    tiers = list(_CLOUD_SPEEDS)
+    rng.shuffle(tiers)
     for i in range(max(1, int(total // (32 if tall else 45)))):
         cw = rng.randint(9, 14) if tall else rng.randint(7, 11)
         ch = 3 if sky_u < 6 else (6 if tall else 4)
         if ch + 2 > sky_u:
             ch = max(2, sky_u - 2)
         base = rng.uniform(0, total + cw)
-        speed = _CLOUD_SPEED * (0.75 + 0.5 * rng.random())
+        # 这朵云自己那一档快慢，再抖 ±8%：两朵同档的云也不会像被同一根绳拖着走。
+        # 速度先由"像素/秒"折算回单位（画的时候按单位算、按像素落）。
+        speed = (_CLOUD_PX_PER_SEC / s) * tiers[i % len(tiers)] * rng.uniform(0.92, 1.08)
         cx = (base + secs * speed) % (total + cw) - cw
         y = iy + (1 + rng.randint(0, max(0, sky_u - ch - 3))) * s
-        img = _cloud_img(cw, ch, cloud.name(), shade.name(), seed_day * 31 + i)
-        img = img.scaled(cw * s, ch * s, Qt.AspectRatioMode.IgnoreAspectRatio,
-                         Qt.TransformationMode.FastTransformation)
+        key = (cw, ch, cloud.name(), shade.name(), seed_day * 31 + i, s)
+        img = _scaled_cache.get(key)
+        if img is None:
+            img = _cloud_img(cw, ch, cloud.name(), shade.name(),
+                             seed_day * 31 + i).scaled(
+                cw * s, ch * s, Qt.AspectRatioMode.IgnoreAspectRatio,
+                Qt.TransformationMode.FastTransformation)
+            if len(_scaled_cache) > 64:
+                _scaled_cache.clear()
+            _scaled_cache[key] = img
         p.setOpacity(0.95 if star < 0.3 else 0.8)
-        p.drawImage(QPoint(ix + int(cx) * s, y), img)
+        p.drawImage(QPoint(ix + int(round(cx * s)), y), img)
         p.setOpacity(1.0)
     return bands
 

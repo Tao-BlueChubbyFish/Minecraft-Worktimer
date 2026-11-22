@@ -156,7 +156,9 @@ def palette_at(base: dict, hour: float, season: str | None = None) -> dict:
     两层是叠加的：先季节（这一季的草是什么色），再钟点（这个点的光是什么色）。
     季节不传就是原来那套（工具脚本和旧调用不受影响）。
     """
-    dh, sm, vm = _curve_at(hour)
+    dh0, sm0, vm0 = _curve_at(hour)
+    dh, sm, vm = dh0, sm0, vm0
+    sh, ss, sv = 0.0, 1.0, 1.0
     if season:
         sh, ss, sv = _season.tint(season)
         dh += sh
@@ -171,7 +173,13 @@ def palette_at(base: dict, hour: float, season: str | None = None) -> dict:
     for key in ("grass", "dirt"):
         seq = base.get(key)
         if isinstance(seq, list):
-            pal[key] = [_tint(QColor(x), dh, sm, vm).name() for x in seq]
+            if key == "dirt":
+                # 泥土不吃季节的色相：一年四季都是同一块土，冬天只是冷一点、暗一点。
+                # 原来照搬草的那套参数，冬天 +22° 把暖棕直接抽成灰黄，看着就像发霉。
+                pal[key] = [_tint(QColor(x), dh0 + sh * 0.15,
+                                  sm0 * ss ** 0.2, vm0 * sv ** 0.35).name() for x in seq]
+            else:
+                pal[key] = [_tint(QColor(x), dh, sm, vm).name() for x in seq]
     fill_seq = base.get("fill")
     if isinstance(fill_seq, list):
         pal["fill"] = [_tint(QColor(x), dh, sm, vm).name() for x in fill_seq]

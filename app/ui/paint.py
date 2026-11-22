@@ -119,13 +119,25 @@ class PaintMixin:
             tw, _th = pixel_font.measure_cjk(title_text, self.u(tsize), self.family,
                                              bold=True)
         # 雪厚跟着当天的天：大雪最厚、小雪次之、晴阴只留一层残雪。
-        # 等 v1.3 接了真实天气，这里改看气温——暖冬不下雪，就不用画这一层。
+        # 接了真实天气之后气温说了算：>4℃ 不积雪，0~4℃ 积薄一层，≤0℃ 照常厚。
+        # 只在冬天积雪是"随机天气"时代的规矩；真实天气下十一月就能下雪（北方），
+        # 那时天上飘着雪、顶栏却没积雪就不对了，所以下雪天也照积。
+        today_w = weather.weather_of(self._day)
         snow_cap = None
-        if (pal.get("_season") or "") == "winter":
-            snow_cap = {weather.BLIZZARD: 6, weather.SNOWY: 5,
-                        weather.CLOUDY: 3}.get(weather.weather_of(self._day), 2)
+        if (pal.get("_season") or "") == "winter" or today_w in weather.SNOWY:
+            snow_cap = {weather.BLIZZARD: 12, weather.SNOWY: 10,
+                        weather.CLOUDY: 6}.get(today_w, 5)
+            temp = weather.temperature()
+            if temp is not None:
+                if temp > 4:
+                    snow_cap = 0
+                elif temp > 0:
+                    snow_cap = min(snow_cap, 5)
+        # 左上角那个草方块是斜的，雪从四个角露出来就像被冻在冰里——那一整段不积雪、不挂冰凌。
+        # 方块和标题之间本来就没几格，留一点点雪只会变成孤零零的一撮，所以一直清到标题起头。
         theme.draw_grass_strip(p, W, hh, S, pal, keep_clear=(tx - S, tx + tw + S),
-                               snow_cap=snow_cap)
+                               snow_cap=snow_cap,
+                               skip=(0, tx - S))
         theme.fill(p, 0, hh, W, S, QColor(pal["outline"]))
 
         # 图标 + 标题 / 状态文案 + 右上角菜单按钮：三者共用草皮带的一条中线

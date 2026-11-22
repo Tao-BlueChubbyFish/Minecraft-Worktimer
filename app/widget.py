@@ -158,6 +158,7 @@ class TimerWidget(ClockMixin, ContentMixin, PaintMixin, InteractMixin,
         self._tick_timer.start(1000)
 
         self._first_prompt_done = False
+        self._apply_cached_weather()
 
     # ---------------------------------------------------------------- 生命周期
 

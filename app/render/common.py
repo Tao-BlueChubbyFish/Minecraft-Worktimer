@@ -73,6 +73,21 @@ def _grass_tones(pal: dict) -> list[str]:
             mid.darker(104).name(), mid.darker(108).name()]
 
 
+def _dirt_tones(pal: dict) -> tuple[list[str], list[str]]:
+    """泥土噪声的主色与斑点色。
+
+    主色收成 4 档近色（同 `_grass_tones`），斑点另外给几个更深的暗点——
+    原来把五档土色（明度差 0.16）无差别撒满，远看不是"泥土"，是发脏的花斑。
+    泥土该读成"一块土 + 几颗碎石子"，不该读成"霉点"。
+    """
+    cols = sorted((QColor(x) for x in pal["dirt"]), key=lambda q: q.lightness())
+    mid = cols[len(cols) // 2]
+    tones = [mid.lighter(106).name(), mid.name(),
+             mid.darker(106).name(), mid.darker(112).name()]
+    specks = [mid.darker(140).name(), mid.darker(150).name(), mid.lighter(118).name()]
+    return tones, specks
+
+
 def texture(kind: str, w: int, h: int, s: int, pal: dict, seed: int = 0) -> QImage:
     key = (kind, w, h, s, pal.get("panel", ["#fff"])[0], pal.get("grass", ["#fff"])[0], pal.get("dirt", ["#fff"])[0], seed)
     hit = _tex_cache.get(key)
@@ -91,7 +106,8 @@ def texture(kind: str, w: int, h: int, s: int, pal: dict, seed: int = 0) -> QIma
         # 杂色（speck）比例从 0.38 降到 0.20，配色也收成 4 档近色：干净但仍有颗粒
         img = _noise_block(w, h, _grass_tones(pal), 53 + seed, 0.20)
     elif kind == "dirt":
-        img = _noise_block(w, h, pal["dirt"], 61 + seed, 0.38)
+        tones, specks = _dirt_tones(pal)
+        img = _noise_block(w, h, tones, 61 + seed, 0.22, specks)
     elif kind == "stone":
         # 未开垦的岩层：比面板更暗，接近石头 GUI 的内凹色
         img = _noise_block(w, h, pal["track"], 83 + seed, 0.34,

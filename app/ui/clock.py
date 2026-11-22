@@ -86,6 +86,7 @@ class ClockMixin:
         # 启动后头一秒就把这台机器量一遍，别拖到草皮卷要动的那一刻才卡一下
         if getattr(self, "_auto_fps", None) is None:
             self._fps_mode()
+        self._maybe_fetch_weather()
         self._sync_rain_timer()
         if self.tray is not None:
             self.tray.refresh(self.snap, self._evening_choice)
@@ -137,12 +138,16 @@ class ClockMixin:
         return "low"
 
     def _sync_rain_timer(self) -> None:
-        """有东西在动时才开的那条马达：雨、雪、落叶都走 30fps。
+        """只有"必须逐帧动"的东西在时才开的马达：雨、雪、落叶。
 
         以前按天气分了 83 / 125 / 150 / 200ms 四档，理由是"雨快雪慢"。
         但低帧率下慢速下落是一格一格跳的——看着像卡了，不像在飘。
-        现在统一 33ms：动作的快慢由每秒移动多少单位决定，不该由帧率决定。
-        其余天气 / 收进托盘 / 关了天气开关，都立刻停——不留一条空转的定时器。
+        现在按档位统一 16 / 33 / 66ms：动作的快慢由每秒移动多少单位决定，
+        不该由帧率决定。
+
+        **云不算**：它已经慢到一个像素走三秒，每秒一次的例行重绘（_tick）就够了。
+        晴天的云要是也挂在这条 60 帧马达上，等于为了三秒挪一格的东西一直烧一个核。
+        收进托盘、雨雪落叶都没有，立刻停——不留一条空转的定时器。
         """
         today = weather.weather_of(self._day)
         fall_on = bool(self.cfg.get("ui.fx.fall",
@@ -150,7 +155,8 @@ class ClockMixin:
         # 秋天晴天也要动：落叶是季节的常态，不是降水
         leaves = (fall_on and season.season_of(self._day) == season.AUTUMN
                   and today not in weather.PRECIP)
-        want = (fall_on and (today in weather.PRECIP or leaves) and self.isVisible())
+        want = (fall_on and (today in weather.PRECIP or leaves)
+                and self.isVisible())
         if want:
             # auto 由 _fps_mode 现场拍板（见 _probe_fps），也可以手动锁档。
             mode = self._fps_mode()
@@ -280,6 +286,17 @@ class ClockMixin:
         if not self.rule.is_workday(now.date()):
             return
         if self.store.work_start(now.date()) is not None:
+            return
+        # 第一次启动把该问的一次问完（上下班、午休、真实天气），之后不再主动弹。
+        if not self.cfg.get("schedule.setup_done", False):
+            self.cfg.set("schedule.setup_done", True)
+            self.cfg.set("schedule.ask_start_on_launch", False)
+            self.cfg.set("schedule.remember_start", True)
+            try:
+                self.cfg.save()
+            except Exception:
+                pass
+            self.open_settings_dialog()
             return
         if not self.cfg.get("schedule.ask_start_on_launch", True):
             return

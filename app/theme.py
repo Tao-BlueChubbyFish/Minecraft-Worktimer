@@ -30,7 +30,7 @@ from .render.chrome import (  # noqa: F401
 from .render.sky import (  # noqa: F401
     _cloud_cache, _SKY_CURVE, _SKY_DAWN_H, _SKY_NIGHT_H,
     work_sky_hour, _mix, sky_at, _cloud_img,
-    _CLOUD_SPEED, _draw_sky, _draw_moon, _draw_bird,
+    _CLOUD_PX_PER_SEC, _draw_sky, _draw_moon, _draw_bird,
     _draw_flock, _FLOCK_SHAPES, _BIRD,
 )
 from .render.meadow import (  # noqa: F401
