@@ -27,8 +27,8 @@ TIMEOUT_MS = 8000
 
 # 国内下载兜底。读不到 latest.json 时也能用（所以必须写死在代码里）。
 # 发新版换了蓝奏云链接，除了改这里，也可以在 latest.json 里加 url_cn / cn_password 覆盖。
-FALLBACK_CN_URL = "https://wwbpm.lanzoue.com/iyhrj4gu68ch"
-FALLBACK_CN_PWD = "cvre"
+FALLBACK_CN_URL = "https://wwbpm.lanzoue.com/iEezd4gyr26f"
+FALLBACK_CN_PWD = "61kp"
 
 
 def parse_version(text: str) -> tuple[int, ...]:
