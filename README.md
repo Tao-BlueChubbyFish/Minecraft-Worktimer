@@ -11,7 +11,7 @@
 
 | 渠道 | 地址 | 说明 |
 | --- | --- | --- |
-| **蓝奏云**（国内推荐） | https://wwbpm.lanzoue.com/iyhrj4gu68ch | 提取码 `cvre`，国内直连、速度快 |
+| **蓝奏云**（国内推荐） | https://wwbpm.lanzoue.com/iEezd4gyr26f | 提取码 `61kp`，国内直连、速度快 |
 | GitHub Releases | [Releases](../../releases) | 官方版本，国内可能需要网络加速 |
 
 下载后双击 `MCWorkTimer_v1.0.exe` 就能用，不需要装 Python。
