@@ -253,6 +253,14 @@ class TimeDialog(MCDialog):
 
     def __init__(self, parent, cfg, pal, S, dpr, current):
         self.result_time = None
+        # 还没设过天气才问。这个窗每个工作日都会弹，天天问一遍「要不要真实天气」
+        # 比不问还烦，所以问过一次（选什么都算）就彻底不再出现。
+        self.ask_weather = (not bool(str(cfg.get("weather.place", "") or "").strip())
+                            and not bool(cfg.get("weather.asked", False)))
+        self.use_real = False
+        self.place = ""
+        if self.ask_weather:
+            self.H_UNITS = 200
         super().__init__(parent, cfg, pal, S, dpr)
 
         default = engine.parse_hhmm(self.cfg.get("schedule.default_work_start", "09:00"),
@@ -291,17 +299,52 @@ class TimeDialog(MCDialog):
         self._place(self._btn_more, 14, 102, 174, 15)
         self._btn_more.clicked.connect(self._goto_settings)
 
+        btn_y = 124
+        if self.ask_weather:
+            # 同样一块透明按钮盖在自绘方块上。勾上才展开地点输入——
+            # 不想要真实天气的人，这一行勾选框都不必碰。
+            self._chk_w = QPushButton("", self)
+            self._chk_w.setCheckable(True)
+            self._chk_w.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+            self._chk_w.setStyleSheet("QPushButton{background:transparent;border:none;}"
+                                      "QPushButton:hover{background:rgba(255,255,255,26);}")
+            self._place(self._chk_w, 12, 120, 178, 16)
+            self._chk_w.toggled.connect(self._on_weather_toggle)
+
+            self._place_edit = QLineEdit(self)
+            self._place_edit.setFont(self._qfont(8))
+            self._place_edit.setMaxLength(24)
+            self._place_edit.setPlaceholderText("比如 杭州")
+            self._place_edit.setStyleSheet(
+                f"QLineEdit{{background:{pal['panel_shade'][0]};color:{pal['text']};"
+                f"border:2px solid {pal['bevel_dark']};padding:2px 4px;}}")
+            self._place(self._place_edit, 40, 140, 148, 18)
+            self._place_edit.hide()
+            btn_y = 178
+
         self._cancel = QPushButton("取消", self)
         self._cancel.setFont(self._qfont(7))
-        self._place(self._cancel, 74, 124, 50, 15)
+        self._place(self._cancel, 74, btn_y, 50, 15)
         self._cancel.clicked.connect(self.reject)
 
         self._ok = QPushButton("确定", self)
         self._ok.setObjectName("primary")
         self._ok.setFont(self._qfont(7, bold=True))
         self._ok.setDefault(True)
-        self._place(self._ok, 130, 124, 56, 15)
+        self._place(self._ok, 130, btn_y, 56, 15)
         self._ok.clicked.connect(self._accept)
+
+    def _on_weather_toggle(self, on: bool) -> None:
+        self._place_edit.setVisible(bool(on))
+        if on:
+            self._place_edit.setFocus()
+        self.update()
+
+    def weather_choice(self):
+        """(要不要真实天气, 地点)。没问过天气的窗返回 (False, "")。"""
+        if not self.ask_weather:
+            return False, ""
+        return bool(self.use_real), self.place
 
     @property
     def remember(self) -> bool:
@@ -319,6 +362,10 @@ class TimeDialog(MCDialog):
 
     def _accept(self) -> None:
         self.result_time = self._input.value
+        if self.ask_weather:
+            self.place = self._place_edit.text().strip()
+            # 勾了却没填地点，等于没勾——不拦人，直接当没选
+            self.use_real = bool(self._chk_w.isChecked()) and bool(self.place)
         self.accept()
 
     def render_body(self, p: QPainter, w: int, h: int) -> None:
@@ -357,6 +404,29 @@ class TimeDialog(MCDialog):
                 theme.fill(p, bx + (4 + i) * S, by + (7 - i) * S, S, S, ink)
         pixel_font.draw_cjk(p, self.u(28), self.u(86), self.REMEMBER_TEXT, self.u(8),
                             QColor(pal["text"]), self.family)
+
+        if not self.ask_weather:
+            return
+        # 真实天气：和上面「记住」同一套方块画法，只是位置下一行
+        wx, wy, ws = self.u(14), self.u(124), self.u(10)
+        theme.fill(p, wx, wy, ws, ws, QColor("#3a3a3a"))
+        theme.fill(p, wx + S, wy + S, ws - 2 * S, ws - 2 * S, QColor("#e2e2e2"))
+        if self._chk_w.isChecked():
+            theme.fill(p, wx + S, wy + S, ws - 2 * S, ws - 2 * S, QColor(pal["accent"]))
+            ink = QColor("#1b2f10")
+            for i in range(3):
+                theme.fill(p, wx + (2 + i) * S, wy + (5 + i) * S, S, S, ink)
+            for i in range(5):
+                theme.fill(p, wx + (4 + i) * S, wy + (7 - i) * S, S, S, ink)
+        pixel_font.draw_cjk(p, self.u(28), self.u(124), "真实天气", self.u(8),
+                            QColor(pal["text"]), self.family)
+        if not self._chk_w.isChecked():
+            return
+        pixel_font.draw_cjk(p, self.u(14), self.u(148), "地点", self.u(8),
+                            QColor(pal["text"]), self.family)
+        pixel_font.draw_cjk(p, self.u(40), self.u(166),
+                            "填到市就行。软件会按你填的地址改变天气。", self.u(7),
+                            QColor(pal["text_dim"]), self.family)
 
 
 class ConfirmDialog(MCDialog):
@@ -863,7 +933,7 @@ class SettingsDialog(MCDialog):
     """
 
     W_UNITS = 212
-    H_UNITS = 184
+    H_UNITS = 236
     TITLE = "设置"
 
     # 七个格子在这一行里的位置（布局单位）：点亮=上班，灰=休息
@@ -904,17 +974,52 @@ class SettingsDialog(MCDialog):
         self._mk_step(96, 98, "-", lambda: self._bump("lunch", -15))
         self._mk_step(168, 98, "+", lambda: self._bump("lunch", 15))
 
+        # 真实天气：勾上才展开地点。并进这里之后，设过也能随时改，
+        # 不像原来只有首次那个窗能设。
+        self.use_real = str(cfg.get("weather.mode", "random")) == "real"
+        self.place = str(cfg.get("weather.place", "") or "")
+        self._chk_w = QPushButton("", self)
+        self._chk_w.setCheckable(True)
+        self._chk_w.setChecked(self.use_real)
+        self._chk_w.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self._chk_w.setStyleSheet("QPushButton{background:transparent;border:none;}"
+                                  "QPushButton:hover{background:rgba(255,255,255,26);}")
+        self._place(self._chk_w, 12, 166, 188, 16)
+        self._chk_w.toggled.connect(self._on_weather_toggle)
+
+        self._place_edit = QLineEdit(self)
+        self._place_edit.setFont(self._qfont(8))
+        self._place_edit.setMaxLength(24)
+        self._place_edit.setPlaceholderText("比如 杭州")
+        self._place_edit.setText(self.place)
+        self._place_edit.setStyleSheet(
+            f"QLineEdit{{background:{pal['panel_shade'][0]};color:{pal['text']};"
+            f"border:2px solid {pal['bevel_dark']};padding:2px 4px;}}")
+        self._place(self._place_edit, 40, 184, 156, 18)
+        self._place_edit.setVisible(self.use_real)
+
         b_cancel = QPushButton("取消", self)
         b_cancel.setFont(self._qfont(7))
-        self._place(b_cancel, 76, 166, 54, 15)
+        self._place(b_cancel, 76, 214, 54, 15)
         b_cancel.clicked.connect(self.reject)
 
         b_ok = QPushButton("保存", self)
         b_ok.setObjectName("primary")
         b_ok.setFont(self._qfont(7, bold=True))
         b_ok.setDefault(True)
-        self._place(b_ok, 134, 166, 58, 15)
+        self._place(b_ok, 134, 214, 58, 15)
         b_ok.clicked.connect(self.accept)
+
+    def _on_weather_toggle(self, on: bool) -> None:
+        self._place_edit.setVisible(bool(on))
+        if on:
+            self._place_edit.setFocus()
+        self.update()
+
+    def weather_choice(self):
+        """(要不要真实天气, 地点)。以控件当前状态为准，不看 __init__ 时的快照。"""
+        return (bool(self._chk_w.isChecked()),
+                self._place_edit.text().strip())
 
     # ------------------------------------------------------------------
     def _mk_step(self, x: float, y: float, text: str, cb) -> None:
@@ -1045,3 +1150,26 @@ class SettingsDialog(MCDialog):
         else:
             pixel_font.draw_cjk(p, 0, self.u(153), "点亮=上班，灰=休息（点一下切换）",
                                 self.u(7), dim, fam, align="center", max_w=w)
+
+        # 真实天气：同一套方块勾选，勾上才展开地点
+        wx, wy, ws = self.u(14), self.u(166), self.u(10)
+        theme.fill(p, wx, wy, ws, ws, QColor("#3a3a3a"))
+        theme.fill(p, wx + self.S, wy + self.S, ws - 2 * self.S, ws - 2 * self.S,
+                   QColor("#e2e2e2"))
+        if self._chk_w.isChecked():
+            theme.fill(p, wx + self.S, wy + self.S, ws - 2 * self.S, ws - 2 * self.S,
+                       QColor(pal["accent"]))
+            tick = QColor("#1b2f10")
+            for i in range(3):
+                theme.fill(p, wx + (2 + i) * self.S, wy + (5 + i) * self.S,
+                           self.S, self.S, tick)
+            for i in range(5):
+                theme.fill(p, wx + (4 + i) * self.S, wy + (7 - i) * self.S,
+                           self.S, self.S, tick)
+        pixel_font.draw_cjk(p, self.u(28), self.u(166), "真实天气", self.u(9), ink, fam)
+        if not self._chk_w.isChecked():
+            return
+        pixel_font.draw_cjk(p, self.u(14), self.u(190), "地点", self.u(9), ink, fam)
+        pixel_font.draw_cjk(p, self.u(40), self.u(204),
+                            "填到市就行。软件会按你填的地址改变天气。", self.u(7),
+                            dim, fam)

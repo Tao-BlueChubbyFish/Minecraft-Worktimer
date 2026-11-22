@@ -67,18 +67,21 @@ def draw_rain(p: QPainter, ix: int, iy: int, iw: int, ih: int, s: int,
     count = max(6, int(cols * _DENSITY))
     rng = random.Random((seed_day * 149 + 41) & 0x7FFFFFFF)
 
-    span = rows + 5
+    # 位置按**屏幕像素**算，不按单位。雨速 7~11 单位/秒，一格要走六帧以上，
+    # 按单位取整就变成"一秒只动十来下"，看着一顿一顿。方块仍是 s×s，
+    # 只是纵向不再死对齐格子——雨本来就在动，这点错位看不出来。
+    span_px = (rows + 5) * s
     for _ in range(count):
         x = rng.randrange(cols)
-        speed = rng.uniform(*_SPEED)
-        offset = rng.uniform(0.0, span)
+        speed = rng.uniform(*_SPEED) * s
+        offset = rng.uniform(0.0, span_px)
         length = rng.choice(_LEN)
-        y = int((offset + secs * speed) % span) - 5
+        y = int((offset + secs * speed) % span_px) - 5 * s
         for k in range(length):
-            yy = y + k
-            if 0 <= yy < rows:
+            yy = y + k * s
+            if 0 <= yy < rows * s:
                 col = _HEAD if k == length - 1 else _TAIL
-                fill(p, ix + x * s, iy + yy * s, s, s, col)
+                fill(p, ix + x * s, iy + yy, s, s, col)
 
 
 _SNOW = "#eaf2fb"
@@ -178,18 +181,19 @@ def draw_downpour(p: QPainter, ix: int, iy: int, iw: int, ih: int, s: int,
     count = max(8, int(cols * _DP_DENSITY))
     rng = random.Random((seed_day * 233 + 97) & 0x7FFFFFFF)
 
-    span = rows + 8
+    # 和小雨同样的道理：纵向按屏幕像素走，才不会被单位取整切成"一顿一顿"
+    span_px = (rows + 8) * s
     for _ in range(count):
         cx = rng.randrange(cols)
-        speed = rng.uniform(*_DP_SPEED)
-        offset = rng.uniform(0.0, span)
+        speed = rng.uniform(*_DP_SPEED) * s
+        offset = rng.uniform(0.0, span_px)
         length = rng.choice(_DP_LEN)
-        head_y = int((offset + secs * speed) % span) - 6      # 雨丝的头（最下端）
+        head_y = int((offset + secs * speed) % span_px) - 6 * s   # 雨丝的头（最下端）
         for k in range(length):
-            yy = head_y - k                                    # k 越大越往上
-            if not (0 <= yy < rows):
+            yy = head_y - k * s                                   # k 越大越往上
+            if not (0 <= yy < rows * s):
                 continue
-            xx = cx + k // 2                                   # 往上同时往右，才读成"斜"
+            xx = cx + k // 2                                      # 往上同时往右，才读成"斜"
             if 0 <= xx < cols:
-                fill(p, ix + xx * s, iy + yy * s, s, s,
+                fill(p, ix + xx * s, iy + yy, s, s,
                      _DP_HEAD if k == 0 else _DP_TAIL)

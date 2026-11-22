@@ -43,11 +43,45 @@ SNOWY = (SNOW, BLIZZARD)
 PRECIP = RAINY + SNOWY
 
 
+# 真实天气取到之后，只覆盖今天这一天；其余日子照旧按日期播种。
+# 用模块级变量而不是加参数，是因为 weather_of(day) 被十几处调用，
+# 没必要为了一个可选功能把所有调用点都改一遍。
+_overrides: dict[str, str] = {}
+_temp: float | None = None
+
+
+def set_real(day: date, code: str, temp: float | None = None) -> None:
+    """把某一天换成真实天气。code 必须是本模块的六种之一。"""
+    global _temp
+    _overrides.clear()
+    _overrides[day.isoformat()] = code
+    _temp = temp
+
+
+def clear_real() -> None:
+    """关掉真实天气，回到按日期播种。"""
+    global _temp
+    _overrides.clear()
+    _temp = None
+
+
+def is_real(day: date) -> bool:
+    return day.isoformat() in _overrides
+
+
+def temperature() -> float | None:
+    """真实气温（℃）。没开真实天气时是 None。"""
+    return _temp
+
+
 def weather_of(day: date) -> str:
     """这一天的天气。乘法散列取模，同一天恒定，相邻两天互不相关。
 
     冬季走另一套权重，把雨换成雪——雪不是外加的天气，是冬天里"雨"的样子。
     """
+    hit = _overrides.get(day.isoformat())
+    if hit:
+        return hit
     v = (day.toordinal() * 2654435761 + 17) % 1000
     bounds = _WINTER_BOUNDS if season.season_of(day) == season.WINTER else _BOUNDS
     for edge, name in bounds:

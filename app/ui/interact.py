@@ -202,7 +202,7 @@ class InteractMixin:
             return                      # 双击那句话只翻句，不弹登记窗
         # 草地上双击 = 连推两下，不是"打开登记窗"。
         # 连点是这个互动里最上瘾的部分，被一个弹窗打断就全毁了；
-        # 登记窗的入口在右键菜单里（修改今日上班时间），不缺这一条路。
+        # 登记窗在「设置」里，只补今天的话双击别处也行，不缺这一条路。
         if event.button() == Qt.MouseButton.LeftButton and self._in_meadow(pos):
             self.poke_meadow(pos)
             return
@@ -266,7 +266,8 @@ class InteractMixin:
         m.setStyleSheet(style.menu_qss(pal, font_px, self.family))
 
         cumulative = self.store.cumulative_minutes(self._day, self._live_overtime())
-        a_time = m.addAction("修改今日上班时间…")
+        # 只有这一个入口。以前「今天几点到的」和「作息设置」分成两项，两处都能改
+        # 上班时间，站在用户角度根本分不清该点哪个。
         a_cfg = m.addAction("设置…")
         a_home = m.addAction("今天就到这（收工）")
         a_home.setEnabled(self.snap.state == engine.ST_OVERTIME
@@ -327,7 +328,7 @@ class InteractMixin:
         # 动画流畅度：三档都在，默认那档由机器自己判断（见 _probe_fps）。
         # 菜单里只摆三个具体档位，不摆"自动"——用户要的是"我现在跑哪一档"，
         # 不是"程序是怎么决定的"。
-        m_fps = StayOpenMenu("流畅度", m_show)
+        m_fps = StayOpenMenu("帧率", m_show)
         m_show.addMenu(m_fps)
         fps_now = self._fps_mode()
         self._fps_actions = {}
@@ -366,7 +367,6 @@ class InteractMixin:
         a_about.triggered.connect(self.open_about_dialog)
         a_quit = m.addAction("退出")
 
-        a_time.triggered.connect(self.open_time_dialog)
         a_cfg.triggered.connect(self.open_settings_dialog)
         a_home.triggered.connect(lambda: self._choose("home"))
         a_reset.triggered.connect(self.reset_today)
@@ -404,6 +404,7 @@ class InteractMixin:
             if remember:
                 self.cfg.set("schedule.default_work_start",
                              f"{value.hour:02d}:{value.minute:02d}")
+            self._apply_weather_choice(dlg)
             try:
                 self.cfg.save()
             except Exception:
@@ -411,6 +412,146 @@ class InteractMixin:
             self._tick()
             self.update()
 
+
+    # ---------------------------------------------------------------- 真实天气
+
+    # 多久跟天气服务对一次表。天气是"当下"的东西：早上取到晴，下午真下起雨来，
+    # 牌子上还挂着太阳就不对了。三小时一次，一个请求而已。
+    _WX_TTL = 3 * 3600
+    # 没网时下一回隔多久再试——别每秒都撞一次墙。
+    _WX_RETRY = 15 * 60
+
+    def _apply_weather_choice(self, dlg) -> None:
+        """把对话框里「真实天气」的选择落到配置。没有这一项的窗就跳过。"""
+        if not hasattr(dlg, "weather_choice"):
+            return
+        use_real, place = dlg.weather_choice()
+        self.cfg.set("weather.asked", True)
+        self.cfg.set("weather.fetched_day", "")
+        self.cfg.set("weather.fetched_ts", 0.0)   # 换了地方就一定重取，不吃旧缓存
+        self.cfg.set("weather.shown", "")
+        if use_real and place:
+            self.cfg.set("weather.mode", "real")
+            self.cfg.set("weather.place", place)
+            self.start_real_weather(place)
+        else:
+            self.cfg.set("weather.mode", "random")
+            self.cfg.set("weather.place", "")
+            weather.clear_real()
+
+    def start_real_weather(self, place: str) -> None:
+        """问一次真实天气。异步跑，界面不等它。"""
+        if getattr(self, "_wx", None) is not None:
+            return                       # 一次只查一个，别每秒 tick 都发请求
+        from ..realtime_weather import WeatherFetcher
+
+        self._wx = WeatherFetcher(self)
+        self._wx.done.connect(self._on_weather_done)
+        self._wx.failed.connect(self._on_weather_failed)
+        self._wx.start(place)
+
+    def _apply_cached_weather(self) -> None:
+        """启动瞬间就把上次取到的真实天气接上，别先闪一帧随机天气。
+
+        第一帧在 _tick 之前就画出来了，而 _tick 一秒后才跑，
+        所以这里得在构造末尾手动接一次。
+
+        **跨天也照接**：早上开机时缓存是昨天的，但昨天的天比随机抽一个更接近窗外，
+        先顶几秒，等真正的请求回来再换。没网时它就是最后的已知值。
+        """
+        if str(self.cfg.get("weather.mode", "random")) != "real":
+            return
+        code = str(self.cfg.get("weather.code", "") or "")
+        if code:
+            weather.set_real(self._day, code, self.cfg.get("weather.temp"))
+
+    def _maybe_fetch_weather(self) -> None:
+        """启动时、跨天时、以及每过三小时，跟天气服务对一次表。
+
+        缓存不是"当天取一次就够"：天气会在一天里变。所以缓存只认三小时，
+        过期就在后台重取一次（界面照旧显示旧的，拿到新的再换，不闪）。
+        """
+        if str(self.cfg.get("weather.mode", "random")) != "real":
+            return
+        place = str(self.cfg.get("weather.place", "") or "").strip()
+        if not place:
+            return
+        same_day = (str(self.cfg.get("weather.fetched_day", "") or "")
+                    == self._day.isoformat())
+        code = str(self.cfg.get("weather.code", "") or "")
+        if code:
+            # 每秒对一次表：跨天、或被别处清掉之后，画面能自己回到真实天气
+            weather.set_real(self._day, code, self.cfg.get("weather.temp"))
+        if getattr(self, "_wx", None) is not None:      # 上一发还没回来，别叠着发
+            return
+        try:
+            ts = float(self.cfg.get("weather.fetched_ts", 0) or 0)
+        except (TypeError, ValueError):
+            ts = 0.0
+        if same_day and code and (_time.time() - ts) < self._WX_TTL:
+            return
+        self.start_real_weather(place)
+
+    def _on_weather_done(self, code: str, temp: float, shown: str) -> None:
+        self._wx = None
+        weather.set_real(self._day, code, temp)
+        self.cfg.set("weather.code", code)
+        self.cfg.set("weather.temp", float(temp))
+        self.cfg.set("weather.fetched_day", self._day.isoformat())
+        self.cfg.set("weather.fetched_ts", _time.time())
+        if shown:
+            self.cfg.set("weather.shown", shown)
+        try:
+            self.cfg.save()
+        except Exception:
+            pass
+        self._tick()
+        self.update()
+
+    def _on_weather_failed(self, reason: str) -> None:
+        """查不到就退回随机。不弹窗拦人——天气是氛围，不该挡住干活。
+
+        但要把两种失败分开：
+        - **地名不对**（"没找到「xx」"）：用户填错了。清掉设置、下次启动再问一次。
+        - **网络不通**：设置本身是好的，只是这会儿连不上。上一次的天气接着用，
+          过一刻钟再试——不能因为一次断网就把人家填好的地方抹掉。
+        """
+        self._wx = None
+        place = str(self.cfg.get("weather.place", "") or "").strip()
+        keep_old = (
+            place
+            and not str(reason).startswith("没找到")
+            and bool(str(self.cfg.get("weather.code", "") or ""))
+        )
+        if keep_old:
+            self.cfg.set("weather.fetched_ts",
+                         _time.time() - self._WX_TTL + self._WX_RETRY)
+            try:
+                self.cfg.save()
+            except Exception:
+                pass
+            return
+
+        weather.clear_real()
+        self.cfg.set("weather.mode", "random")
+        self.cfg.set("weather.place", "")
+        self.cfg.set("weather.code", "")
+        self.cfg.set("weather.fetched_day", "")
+        self.cfg.set("weather.fetched_ts", 0.0)
+        self.cfg.set("weather.asked", False)   # 没设成，下次启动再给一次机会
+        try:
+            self.cfg.save()
+        except Exception:
+            pass
+        self._toast("真实天气没设上：%s" % reason)
+
+    def _toast(self, text: str) -> None:
+        tray = getattr(self, "tray", None)
+        if tray is not None:
+            try:
+                tray.showMessage("MC 工时牌", text)
+            except Exception:
+                pass
 
     def reset_today(self) -> None:
         from ..dialogs import confirm
@@ -498,6 +639,7 @@ class InteractMixin:
         self.cfg.set("schedule.lunch_start", f"{lunch_start.hour:02d}:{lunch_start.minute:02d}")
         self.cfg.set("schedule.lunch_minutes", int(lunch_min))
         self.cfg.set("schedule.workdays", [int(d) for d in workdays])
+        self._apply_weather_choice(dlg)
         try:
             self.cfg.save()
         except Exception:

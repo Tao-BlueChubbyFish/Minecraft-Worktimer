@@ -37,6 +37,8 @@ DEFAULT_CONFIG: dict = {
         "                     在设置里选过一次之后就一直用它",
         "schedule.lunch_minutes: 午休时长（分钟）。午休结束 = 午休开始 + 这个时长",
         "schedule.remember_start: true = 每天自动用 default_work_start 登记，不再弹窗问",
+        "weather: mode=random 按日期播种（默认）/ real 用真实天气；place=用户填的城市名；",
+        "         code/temp 是最近一次取到的缓存，跨天会重取；取不到就静默退回随机",
     ],
     "passthrough_seconds": 3,
     "font_scale": 1.0,
@@ -84,6 +86,17 @@ DEFAULT_CONFIG: dict = {
         "workdays": [1, 2, 3, 4, 5],
         "ask_start_on_launch": True,
         "remember_start": False,
+        "setup_done": False,      # 第一次启动那套设置走完了没有
+    },
+    "weather": {
+        "mode": "random",      # random = 按日期播种；real = 用真实天气
+        "place": "",           # 用户填的城市名
+        "shown": "",           # 天气服务返回的标准地名，显示用
+        "asked": False,        # 是否已经问过「要不要真实天气」
+        "fetched_day": "",     # 最近一次取到的是哪一天，跨天要重取
+        "fetched_ts": 0.0,     # 最近一次取到的时间戳；超过 3 小时重取一次
+        "code": "",            # 缓存下来的天气档
+        "temp": None,          # 缓存下来的气温（℃）
     },
 }
 
@@ -225,7 +238,24 @@ def _coerce_types(cfg: dict) -> dict:
     sc["workdays"] = _workdays(sc.get("workdays"))
     sc["ask_start_on_launch"] = bool(sc.get("ask_start_on_launch", True))
     sc["remember_start"] = bool(sc.get("remember_start", False))
+    sc["setup_done"] = bool(sc.get("setup_done", False))
     cfg["schedule"] = sc
+
+    w = cfg.get("weather") or {}
+    if not isinstance(w, dict):
+        w = {}
+    if w.get("mode") not in ("random", "real"):
+        w["mode"] = "random"
+    for key in ("place", "shown", "fetched_day", "code"):
+        if not isinstance(w.get(key), str):
+            w[key] = ""
+    w["asked"] = bool(w.get("asked", False))
+    w["temp"] = as_float(w.get("temp"), None)
+    w["fetched_ts"] = as_float(w.get("fetched_ts"), 0.0) or 0.0
+    # 选了真实天气却没填地点，等于没选：退回随机，免得每次启动都白失败一次
+    if w["mode"] == "real" and not w["place"].strip():
+        w["mode"] = "random"
+    cfg["weather"] = w
     return cfg
 
 
