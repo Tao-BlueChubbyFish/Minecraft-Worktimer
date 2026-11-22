@@ -10,7 +10,7 @@ import random
 from PySide6.QtCore import QPoint, QPointF, QRect, Qt
 from PySide6.QtGui import QColor, QImage, QPainter, QPixmap, QPolygonF
 
-from .. import pixel_font
+from .. import pixel_font, season as _season
 
 from .common import fill  # noqa: E402
 
@@ -150,12 +150,24 @@ def _tint(col: QColor, dh: float, sm: float, vm: float) -> QColor:
     return QColor.fromHsvF(h, max(0.0, min(1.0, s * sm)), max(0.0, min(1.0, v * vm)), a)
 
 
-def palette_at(base: dict, hour: float) -> dict:
-    """按钟点给草皮 / 泥土调色，返回调色板副本（不改原对象）。"""
+def palette_at(base: dict, hour: float, season: str | None = None) -> dict:
+    """按钟点 + 季节给草皮 / 泥土 / 填充调色，返回调色板副本（不改原对象）。
+
+    两层是叠加的：先季节（这一季的草是什么色），再钟点（这个点的光是什么色）。
+    季节不传就是原来那套（工具脚本和旧调用不受影响）。
+    """
     dh, sm, vm = _curve_at(hour)
-    if abs(dh) < 0.05 and abs(sm - 1.0) < 0.005 and abs(vm - 1.0) < 0.005:
+    if season:
+        sh, ss, sv = _season.tint(season)
+        dh += sh
+        sm *= ss
+        vm *= sv
+    if not season and abs(dh) < 0.05 and abs(sm - 1.0) < 0.005 and abs(vm - 1.0) < 0.005:
         return base
     pal = dict(base)
+    if season:
+        # 画花的那一层要按季节调整密度，顺着调色板捎过去，免得整条调用链都加参数
+        pal["_season"] = season
     for key in ("grass", "dirt"):
         seq = base.get(key)
         if isinstance(seq, list):
@@ -163,7 +175,14 @@ def palette_at(base: dict, hour: float) -> dict:
     fill_seq = base.get("fill")
     if isinstance(fill_seq, list):
         pal["fill"] = [_tint(QColor(x), dh, sm, vm).name() for x in fill_seq]
+    # 递增版本号：草地那层离屏缓存拿它当 key，比逐个比色值便宜得多
+    global _REV
+    _REV += 1
+    pal["_rev"] = _REV
     return pal
+
+
+_REV = 0
 
 
 # ---------------------------------------------------------------- 材质生成

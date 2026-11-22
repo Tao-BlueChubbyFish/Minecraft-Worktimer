@@ -30,7 +30,7 @@ DEFAULT_CONFIG: dict = {
         "ui.fx.*: 情绪化动效开关。greeting=顶部问候语；milestone=里程碑；celebrate=收工庆祝；",
         "         offer=到点询问加不加班；offer_idle_seconds=多久没反应就自动弹出（秒）；",
         "         life=一天两三次从天上飞过的鸟群；moon=入夜后的月亮；",
-        "         fps=动效帧率（默认 60，调低可省电）",
+        "         fps=动效帧率。auto（默认）按机器性能自己挑；也可锁 high/mid/low = 60/30/15",
         "schedule: 上班时间/下班时间/午休，workdays 用 1=周一 ... 7=周日",
         "schedule.workdays: 哪几天上班，1=周一 ... 7=周日。单休、周六休周日上班都能配，至少留一天",
         "schedule.offwork_time: 下班时刻（HH:MM）。留空 = 还没选过，按 onsite_hours 推算；",
@@ -71,7 +71,7 @@ DEFAULT_CONFIG: dict = {
             "moon": True,
             "props": True,
             "weather": True,
-            "fps": 60,
+            "fps": "auto",
         },
     },
     "schedule": {
@@ -197,7 +197,15 @@ def _coerce_types(cfg: dict) -> dict:
             "weather"):
         fx[key] = bool(fx.get(key, True))
     fx["offer_idle_seconds"] = max(5, min(600, as_int(fx.get("offer_idle_seconds"), 25)))
-    fx["fps"] = max(15, min(120, as_int(fx.get("fps"), 60)))
+    # 帧率：auto = 启动时量几帧再定档。旧版默认就是 60，而且老校验会把手动档位
+    # 也压回数字存起来（分不清选过没），所以数字一律按"没选过"处理：60→auto。
+    fps = fx.get("fps", "auto")
+    if isinstance(fps, (int, float)) or str(fps).strip().isdigit():
+        n = as_int(fps, 0)
+        fps = "auto" if n >= 45 else ("mid" if n >= 22 else "low")
+    elif str(fps) not in ("auto", "high", "mid", "low"):
+        fps = "auto"
+    fx["fps"] = str(fps)
     fx["props"] = bool(fx.get("props", True))
     ui["fx"] = fx
     cfg["ui"] = ui

@@ -3,12 +3,27 @@ from __future__ import annotations
 
 import time as _time
 from datetime import datetime, time
-from PySide6.QtCore import QTimer
-from .. import engine, life, quotes, theme, weather
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QImage, QPainter
+from .. import engine, life, quotes, season, sound, theme, weather
 from .consts import TIERS, TIER_ORDER, WEEK_CN  # noqa: F401
 
 
 class ClockMixin:
+
+    def _poke_power(self) -> float:
+        """冲击的当前强度：0 = 没动，1 = 最强。
+
+        点下去那一刻就是最大位移，之后按平方衰减收回——
+        先"啪"地推开、再慢慢归位，比匀速淡出更像冲击波。
+        """
+        t0 = getattr(self, "_poke_t0", None)
+        if t0 is None:
+            return 0.0
+        t = (_time.perf_counter() - t0) / self.POKE_DUR
+        if t >= 1.0:
+            return 0.0
+        return (1.0 - t) ** 2
 
     def _visual_hour(self, now: datetime) -> float:
         """真实钟点 → 进度条里的"天色小时"。"""
@@ -25,7 +40,10 @@ class ClockMixin:
         if start is None:                      # 还没设置上班时间：按真实钟点
             return hour
         span = float(self.cfg.get("ui.sky_span_hours", 13.0) or 13.0)
-        h = theme.work_sky_hour(hour, start.hour + start.minute / 60.0, span)
+        ssn = season.season_of(day) if day is not None else None
+        # 冬天的天光"走得更快"：同样 13 小时的刻度压到 10 小时，下班时天已经黑了
+        span *= season.span_mul(ssn)
+        h = theme.work_sky_hour(hour, start.hour + start.minute / 60.0, span, ssn)
         # 加班入夜：过了下班时间，天色继续往深夜多走一点。
         # 不用写字催人回家，让天自己暗下去——人对自己看着黑下来的天更敏感。
         if snap is not None and snap.state == engine.ST_OVERTIME:
@@ -34,12 +52,15 @@ class ClockMixin:
 
 
     def _refresh_palette(self, now: datetime, force: bool = False) -> None:
-        """按钟点刷新草皮 / 泥土色温，每小时只算一次。"""
+        """按钟点刷新草皮 / 泥土色温，每小时只算一次。季节在这里一起叠上去。"""
         key = int(now.hour + now.minute / 60.0)
         if not force and key == self._pal_hour:
             return
         self._pal_hour = key
-        self.pal = theme.palette_at(self._pal_base, self._visual_hour(now))
+        # 构造时 _day 可能还没赋值，退回用 now 的日期（同一个真相）
+        day = getattr(self, "_day", None) or now.date()
+        self.pal = theme.palette_at(self._pal_base, self._visual_hour(now),
+                                    season.season_of(day))
 
     # ---------------------------------------------------------------- 计时
 
@@ -59,25 +80,81 @@ class ClockMixin:
             self._roll_phase += float(self.cfg.get("ui.sod_roll_idle_speed", 0.012) or 0.012)
         self._check_milestones()
         self._check_total_milestone(now)
+        self._check_sound_end()
         self._check_life(now)
         self._update_evening()
+        # 启动后头一秒就把这台机器量一遍，别拖到草皮卷要动的那一刻才卡一下
+        if getattr(self, "_auto_fps", None) is None:
+            self._fps_mode()
         self._sync_rain_timer()
         if self.tray is not None:
             self.tray.refresh(self.snap, self._evening_choice)
         self.update()
 
-    def _sync_rain_timer(self) -> None:
-        """下雨天才开的那条小马达：雨丝要走，主计时器一秒一帧不够看。
+    # ---------------------------------------------------------------- 帧率
+    _FPS_OF = {"high": 60, "mid": 30, "low": 15}
 
-        大雨 83ms（约 12fps，雨快而长，慢了会断成几截），小雨 125ms（8fps 刚好）。
-        晴天 / 阴天 / 收进托盘 / 关了天气开关，都立刻停——不留一条空转的定时器。
+    def _fps_mode(self) -> str:
+        """当前档位。auto 时按机器性能挑一次，之后一直沿用。"""
+        mode = str(self.cfg.get("ui.fx.fps", "auto") or "auto")
+        if mode in self._FPS_OF:
+            return mode
+        if getattr(self, "_auto_fps", None) is None:
+            self._auto_fps = self._probe_fps()
+        return self._auto_fps
+
+    def _probe_fps(self) -> str:
+        """离屏量几帧，按余量挑档。
+
+        取最快的一帧而不是平均：第一帧要现建草地缓存，慢是正常的，不该为它降档。
+        阈值留足一倍余量——窗口合成、系统负载还要从同一个核里分走时间。
+        """
+        dpr = getattr(self, "_dpr", 1.0) or 1.0
+        w = max(1, int(round(self.width() * dpr)))
+        h = max(1, int(round(self.height() * dpr)))
+        if w < 16 or h < 16:
+            return "high"                      # 尺寸还没定，别急着下结论
+        img = QImage(w, h, QImage.Format.Format_ARGB32_Premultiplied)
+        best = 99.0
+        for _ in range(4):
+            img.fill(Qt.GlobalColor.transparent)
+            p = QPainter(img)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+            p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
+            p.setRenderHint(QPainter.RenderHint.TextAntialiasing, False)
+            t0 = _time.perf_counter()
+            try:
+                self.render_canvas(p, w, h)
+            except Exception:
+                p.end()
+                return "high"
+            p.end()
+            best = min(best, _time.perf_counter() - t0)
+        if best <= 0.009:
+            return "high"
+        if best <= 0.018:
+            return "mid"
+        return "low"
+
+    def _sync_rain_timer(self) -> None:
+        """有东西在动时才开的那条马达：雨、雪、落叶都走 30fps。
+
+        以前按天气分了 83 / 125 / 150 / 200ms 四档，理由是"雨快雪慢"。
+        但低帧率下慢速下落是一格一格跳的——看着像卡了，不像在飘。
+        现在统一 33ms：动作的快慢由每秒移动多少单位决定，不该由帧率决定。
+        其余天气 / 收进托盘 / 关了天气开关，都立刻停——不留一条空转的定时器。
         """
         today = weather.weather_of(self._day)
-        want = (bool(self.cfg.get("ui.fx.weather", True))
-                and today in weather.RAINY
-                and self.isVisible())
+        fall_on = bool(self.cfg.get("ui.fx.fall",
+                                    self.cfg.get("ui.fx.weather", True)))
+        # 秋天晴天也要动：落叶是季节的常态，不是降水
+        leaves = (fall_on and season.season_of(self._day) == season.AUTUMN
+                  and today not in weather.PRECIP)
+        want = (fall_on and (today in weather.PRECIP or leaves) and self.isVisible())
         if want:
-            interval = 83 if today == weather.DOWNPOUR else 125
+            # auto 由 _fps_mode 现场拍板（见 _probe_fps），也可以手动锁档。
+            mode = self._fps_mode()
+            interval = {"low": 66, "mid": 33}.get(mode, 16)
             if self._rain_timer.interval() != interval:
                 self._rain_timer.setInterval(interval)
             if not self._rain_timer.isActive():
@@ -124,6 +201,8 @@ class ClockMixin:
         self._roll_phase0 = self._roll_phase
         self._anim_t0 = _time.perf_counter()
         self._animating = True
+        # 这一段只有 0.8 秒，但也要按档位走：低档机器上别为了它硬拉满
+        self._anim_timer.setInterval({"low": 66, "mid": 33}.get(self._fps_mode(), 16))
         self._anim_timer.start()
 
 
@@ -159,6 +238,8 @@ class ClockMixin:
         # 新的一天：里程碑、收工牌、晚间选择全部归零
         self._ms_hit.clear()
         self._ms_seeded = False
+        self._snd_seeded = False
+        self._snd_day = None
         self._plank_text = ""
         self._offer_open = False
         self._offer_t0 = 0.0
@@ -222,6 +303,26 @@ class ClockMixin:
         return ratio if 0.01 < ratio < 0.99 else None
 
 
+    def _play_sound(self, name: str) -> None:
+        """音效默认关：只有明确打开了 `ui.fx.sound` 才响。"""
+        if bool(self.cfg.get("ui.fx.sound", False)):
+            sound.play(name)
+
+    def _check_sound_end(self) -> None:
+        """下班那一声，一天只响一次。
+
+        `_snd_seeded` 记的是"打开软件时是什么状态"：如果一开就已经过了下班点，
+        那这一声属于过去，不补响；只有亲眼看着它跨过下班时刻，才响。
+        """
+        if not getattr(self, "_snd_seeded", False):
+            self._snd_seeded = True
+            self._snd_day = self._day if self.snap.state == engine.ST_OVERTIME else None
+            return
+        if self.snap.state != engine.ST_OVERTIME or getattr(self, "_snd_day", None) == self._day:
+            return
+        self._snd_day = self._day
+        self._play_sound("end")
+
     def _check_milestones(self) -> None:
         """跨过 25/75/90% 时给一次小反馈：卷子跳一下 + 百分比变金 + 短语顶一会儿。
 
@@ -240,6 +341,7 @@ class ClockMixin:
             if prog + 1e-9 >= m and m not in self._ms_hit:
                 self._ms_hit.add(m)
                 self._start_fx("ms", 1.4)
+                self._play_sound("milestone")
                 self._greet_text = quotes.milestone_text(prog, self._day)
                 self._greet_until = _time.perf_counter() + 8.0
                 break
@@ -285,6 +387,7 @@ class ClockMixin:
         if not say:
             return
         self._start_fx("ms", 1.4)
+        self._play_sound("milestone")
         self._greet_text = say
         self._greet_until = _time.perf_counter() + 8.0
         self.store.save()

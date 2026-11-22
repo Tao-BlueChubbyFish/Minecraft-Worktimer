@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+import math
 import random
 
 from PySide6.QtGui import QColor, QPainter
@@ -78,6 +79,87 @@ def draw_rain(p: QPainter, ix: int, iy: int, iw: int, ih: int, s: int,
             if 0 <= yy < rows:
                 col = _HEAD if k == length - 1 else _TAIL
                 fill(p, ix + x * s, iy + yy * s, s, s, col)
+
+
+_SNOW = "#eaf2fb"
+_SNOW_HI = "#ffffff"
+
+
+def draw_snow(p: QPainter, ix: int, iy: int, iw: int, ih: int, s: int,
+              secs: float, seed_day: int, heavy: bool = False) -> None:
+    """雪花：慢、飘、小。和雨正相反。
+
+    雨是又直又快的线，雪是慢慢晃下来的点——所以这里不画线段，只落方格，
+    横向叠一条正弦让它左右飘。位置同样只由（日期 + 秒数）算出来，不存状态。
+    随机数一律在判边界**之前**取完，否则越界的雪花会打乱后面所有雪花的位置。
+    """
+    cols = max(1, iw // s)
+    rows = max(1, ih // s)
+    count = max(5, int(cols * (0.62 if heavy else 0.34)))
+    rng = random.Random((seed_day * 211 + 67) & 0x7FFFFFFF)
+    span = rows + 4
+    for _ in range(count):
+        x0 = rng.randrange(cols)
+        speed = rng.uniform(2.4, 4.0) if heavy else rng.uniform(1.3, 2.2)
+        offset = rng.uniform(0.0, span)
+        swing = rng.uniform(0.7, 2.0)
+        phase = rng.uniform(0.0, 6.283)
+        bright = rng.random() < 0.30
+        # 和落叶同理：位置按**屏幕像素**取整。按"单位"取整的话，
+        # 慢雪要三十多帧才挪一格，看着像钉在屏幕上。
+        fy = (offset + secs * speed) % span - 4
+        fx = (x0 + math.sin(secs * 0.8 + phase) * swing) % cols
+        py = iy + int(round(fy * s))
+        px = ix + int(round(fx * s))
+        if not iy <= py < iy + ih - s:
+            continue
+        fill(p, px, py, s, s, _SNOW_HI if bright else _SNOW)
+
+
+# 秋叶的四种颜色：枫红、银杏黄、枯褐、浅金。放在一起才像落叶堆，
+# 只用一种会像下"橙色雨"。
+_LEAF_COLORS = ("#c4692c", "#d39a3e", "#a2532a", "#d9ae55")
+
+
+def draw_leaves(p: QPainter, ix: int, iy: int, iw: int, ih: int, s: int,
+                secs: float, seed_day: int, count: int | None = None) -> None:
+    """秋天的落叶：比雪还慢，而且不打旋不行——直着掉就成雪了。
+
+    每片画成横着的两个像素：一个像素太碎，看起来像屏上落的灰；
+    两个像素连起来才读得出"一片东西"。其中一块稍暗，像叶子翻了个面。
+    位置只由（日期 + 秒数）算出来，不存状态——重启、切档都是同一场落叶。
+    """
+    n = count if count is not None else max(6, int(max(1, iw // s) * 0.10))
+    rng = random.Random((seed_day * 373 + 29) & 0x7FFFFFFF)
+    span = ih // s + 4
+    for _ in range(n):
+        x0 = rng.randrange(max(1, iw // s))
+        # 速度差拉大：快的急着落地，慢的几乎悬着。混在一起，任何时刻都有人"正在动"，
+        # 眼睛就不会盯住某一片看它卡。
+        speed = rng.uniform(1.5, 5.5)
+        offset = rng.uniform(0.0, span)
+        swing = rng.uniform(1.4, 3.4)
+        phase = rng.uniform(0.0, 6.283)
+        color = QColor(_LEAF_COLORS[rng.randrange(len(_LEAF_COLORS))])
+        flip = math.sin(secs * 2.2 + phase) > 0
+        # 位置按**屏幕像素**取整，不按"单位"取整。
+        # 一个单位是 s 个屏幕像素，按单位取整等于把精度砍掉 s 倍——
+        # 慢速叶子就会连着十几帧停在同一个格子上。MC 的雪花能丝滑，
+        # 靠的正是坐标连续、由光栅器落到半像素上，而不是"像素风所以该卡"。
+        fy = (offset + secs * speed) % span - 4
+        px = int(round((x0 + math.sin(secs * 1.3 + phase) * swing) * s))
+        py = iy + int(round(fy * s))
+        if not iy <= py < iy + ih - s:
+            continue
+        bx = ix + px
+        if not ix <= bx <= ix + iw - 3 * s:      # 飘出画面的就不画，别在空中突然消失
+            continue
+        if flip:
+            fill(p, bx, py, 3 * s, s, color)
+            fill(p, bx + s, py + s, s, s, color.darker(118))
+        else:
+            fill(p, bx, py, s, 2 * s, color)
+            fill(p, bx + s, py + s, s, s, color.darker(118))
 
 
 def draw_downpour(p: QPainter, ix: int, iy: int, iw: int, ih: int, s: int,

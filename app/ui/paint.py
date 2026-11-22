@@ -101,25 +101,10 @@ class PaintMixin:
 
         theme.draw_panel(p, 0, 0, W, H, S, pal, kind="panel")
 
-        # 顶部草皮
+        # 顶部草皮：冬天的雪在标题这一带压薄，否则白字压在白雪上读不出来。
+        # 标题要先算宽度，草皮才知道该让开哪一段，所以这段量字的逻辑提前到画草皮之前。
         hh = self.u(L["header"])
-        theme.draw_grass_strip(p, W, hh, S, pal)
-        theme.fill(p, 0, hh, W, S, QColor(pal["outline"]))
-
-        # 图标 + 标题 / 状态文案 + 右上角菜单按钮：三者共用草皮带的一条中线
-        icon_u = L["icon"]
-        theme.draw_image_outlined(p, self.u(7 if not self._compact else 5),
-                                  self.u((L["header"] - icon_u) // 2),
-                                  self.u(icon_u), theme.iso_block(pal), S, pal,
-                                  outline=False)
-
         btn = self._btn_rect_px()
-        theme.draw_button(p, btn.x(), btn.y(), btn.width(), btn.height(), S, pal,
-                          pressed=False, hover=self._hover_btn)
-        theme.draw_menu_icon(p, btn.x() + (btn.width() - 9 * S) // 2,
-                             btn.y() + (btn.height() - 9 * S) // 2, S,
-                             QColor(pal["outline"]))
-
         # 紧凑档没有标签行，标题位改放状态文案（省一行高度）；长文案自动降档字号
         if self._compact:
             title_text = content.get("label_short") or content["label"]
@@ -133,6 +118,29 @@ class PaintMixin:
             tsize -= 1
             tw, _th = pixel_font.measure_cjk(title_text, self.u(tsize), self.family,
                                              bold=True)
+        # 雪厚跟着当天的天：大雪最厚、小雪次之、晴阴只留一层残雪。
+        # 等 v1.3 接了真实天气，这里改看气温——暖冬不下雪，就不用画这一层。
+        snow_cap = None
+        if (pal.get("_season") or "") == "winter":
+            snow_cap = {weather.BLIZZARD: 6, weather.SNOWY: 5,
+                        weather.CLOUDY: 3}.get(weather.weather_of(self._day), 2)
+        theme.draw_grass_strip(p, W, hh, S, pal, keep_clear=(tx - S, tx + tw + S),
+                               snow_cap=snow_cap)
+        theme.fill(p, 0, hh, W, S, QColor(pal["outline"]))
+
+        # 图标 + 标题 / 状态文案 + 右上角菜单按钮：三者共用草皮带的一条中线
+        icon_u = L["icon"]
+        theme.draw_image_outlined(p, self.u(7 if not self._compact else 5),
+                                  self.u((L["header"] - icon_u) // 2),
+                                  self.u(icon_u), theme.iso_block(pal), S, pal,
+                                  outline=False)
+
+        theme.draw_button(p, btn.x(), btn.y(), btn.width(), btn.height(), S, pal,
+                          pressed=False, hover=self._hover_btn)
+        theme.draw_menu_icon(p, btn.x() + (btn.width() - 9 * S) // 2,
+                             btn.y() + (btn.height() - 9 * S) // 2, S,
+                             QColor(pal["outline"]))
+
         # 按墨迹居中：不同字号下墨迹上下留白一致，不会像以前那样顶到上边框
         p.save()
         p.setClipRect(QRect(tx, self.u(1), avail_t, max(1, hh - self.u(2))))
@@ -174,18 +182,27 @@ class PaintMixin:
             now = self.snap.now or datetime.now()
             if self.cfg.get("ui.daylight_tint", True):
                 hour = self._visual_hour(now)
-                # 带小数秒：雨丝和云都要"连续地走"。只取整秒的话，雨会一秒跳一格。
-                secs = (now.hour * 3600 + now.minute * 60 + now.second
-                        + now.microsecond / 1_000_000.0)
+                # 动画的秒必须取"此刻"，不能用 snap.now —— 那是上一次 tick 的时刻，
+                # 一秒才更新一次；拿它算 secs 的话，哪怕 30fps 重绘，画面还是每秒动一格。
+                # （底片脚本会把模块里的 _time 冻住，所以这里取 0，拍出来仍是静止的。）
+                wall = _time.time()
+                lt = datetime.fromtimestamp(wall)
+                secs = (lt.hour * 3600 + lt.minute * 60 + lt.second
+                        + lt.microsecond / 1_000_000.0)
             else:
                 hour, secs = 12.0, 0.0
             lunch_ratio = self._lunch_ratio()
             flock_now = ((self._fx_t * self._fx_dur, self._fx_dur)
                          if self._fx_kind == "life" else None)
-            # 天气按日期定：同一天里刷新多少次都一样，跨天才换
-            # 关掉天气效果 → None：云、压色、雨一起收，天空留一大片干净底色
+            # 天气按日期定：同一天里刷新多少次都一样，跨天才换。
+            # 云和下落物是两个独立开关——用户想关的往往是"天上飘的东西"，
+            # 而不是整个气象系统。两个都关 → None，天空留一大片干净底色。
+            clouds_on = bool(self.cfg.get("ui.fx.clouds",
+                                          self.cfg.get("ui.fx.weather", True)))
+            fall_on = bool(self.cfg.get("ui.fx.fall",
+                                        self.cfg.get("ui.fx.weather", True)))
             today_weather = (weather.weather_of(self._day)
-                             if self.cfg.get("ui.fx.weather", True) else None)
+                             if (clouds_on or fall_on) else None)
             theme.draw_meadow_bar(p, bar_pad, bar_y, bar_w, bar_h, S, pal,
                                   self._anim_ratio if self._animating else progress,
                                   paused=paused, seed_day=self._day.toordinal(),
@@ -199,7 +216,10 @@ class PaintMixin:
                                   flock=flock_now,
                                   moon=bool(self.cfg.get("ui.fx.moon", True)),
                                   props=bool(self.cfg.get("ui.fx.props", True)),
-                                  weather=today_weather)
+                                  weather=today_weather,
+                                  clouds=clouds_on, fall=fall_on,
+                                  press=self._poke_power(),
+                                  press_x=getattr(self, "_poke_x", None))
 
         # 底部一行（仅完整布局）
         if L["foot_bottom"]:

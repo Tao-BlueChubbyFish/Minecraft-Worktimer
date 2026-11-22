@@ -1,11 +1,49 @@
 """鼠标与菜单：拖动、点击命中、右键菜单、设置与登记弹窗、托盘、穿透锁定。"""
 from __future__ import annotations
 
+import sys
+import time as _time
+
 from PySide6.QtCore import QPoint, QRect, Qt, QTimer
 from PySide6.QtGui import QCursor
 from PySide6.QtWidgets import QMenu
-from .. import __version_label__, engine, style, weather, win32
+from .. import engine, season, style, weather, win32
 from .consts import TIERS, TIER_ORDER, WEEK_CN  # noqa: F401
+
+
+class StayOpenMenu(QMenu):
+    """勾选项点了不关的菜单。
+
+    QMenu 默认点任何一项就收起。这个菜单里一半是勾选开关（云朵、下落物、
+    每日一句、帧率档位），想连着调两个，就得反复右键、反复找位置。
+    所以这里拦下"点了勾选项"的那一下：状态改了，菜单留着，点别处再收。
+    普通命令项（设置、收工、退出）照旧一点就关——那些是"执行一次"的动作，
+    留着菜单反而碍事。
+    """
+
+    def _stay(self, event) -> bool:
+        """这一下是不是点在勾选开关上（是 = 不关菜单）。"""
+        if event.button() != Qt.MouseButton.LeftButton:
+            return False
+        act = self.actionAt(event.position().toPoint())
+        return (act is not None and act.isCheckable() and act.isEnabled()
+                and act.menu() is None)
+
+    def mousePressEvent(self, event):  # noqa: N802
+        # QMenu 在"按下"这一步就把自己藏了，所以拦截必须放在 press；
+        # 放到 release 里已经晚了——菜单早没了，用户看到的是闪一下。
+        if self._stay(event):
+            act = self.actionAt(event.position().toPoint())
+            act.trigger()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):  # noqa: N802
+        if self._stay(event):
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
 
 class InteractMixin:
@@ -19,6 +57,17 @@ class InteractMixin:
             return False
         return self._plank_rect_px().contains(px)
 
+
+    def _in_meadow(self, pos_logical: QPoint) -> bool:
+        """点在不在那条草地上。草地在正文里，上下都是字，命中区只取进度条那一块。"""
+        dpr = self._dpr or 1.0
+        x = int(pos_logical.x() * dpr)
+        y = int(pos_logical.y() * dpr)
+        L = self._layout()
+        pad = self.u(L.get("bar_pad", L["pad"]))
+        top = self.u(L["bar_y"])
+        hh = self.u(L["bar_h"])
+        return pad <= x < self.u(self.W_UNITS) - pad and top <= y < top + hh
 
     def _hit_choice(self, pos_logical: QPoint) -> int:
         if not self._offer_open:
@@ -88,6 +137,7 @@ class InteractMixin:
                 self.open_menu(event.globalPosition().toPoint())
                 return
             self._press_on_quote = self._in_quote(pos)
+            self._press_on_meadow = self._in_meadow(pos)
             self.begin_drag(event.globalPosition().toPoint())
             self.setCursor(QCursor(Qt.CursorShape.ClosedHandCursor))
         elif event.button() == Qt.MouseButton.RightButton:
@@ -129,6 +179,7 @@ class InteractMixin:
 
     def mouseReleaseEvent(self, event):  # noqa: N802
         if event.button() == Qt.MouseButton.LeftButton and self._drag_offset is not None:
+            pos = event.position().toPoint()
             moved = self.end_drag(event.globalPosition().toPoint())
             self.unsetCursor()
             if moved:
@@ -136,7 +187,10 @@ class InteractMixin:
             elif self._press_on_quote:
                 # 点一下那句 = 换下一句；手指挪过（拖窗口）就不算
                 self.next_quote()
+            elif self._press_on_meadow:
+                self.poke_meadow(pos)
         self._press_on_quote = False
+        self._press_on_meadow = False
         super().mouseReleaseEvent(event)
 
 
@@ -146,6 +200,12 @@ class InteractMixin:
         pos = event.position().toPoint()
         if self._in_quote(pos):
             return                      # 双击那句话只翻句，不弹登记窗
+        # 草地上双击 = 连推两下，不是"打开登记窗"。
+        # 连点是这个互动里最上瘾的部分，被一个弹窗打断就全毁了；
+        # 登记窗的入口在右键菜单里（修改今日上班时间），不缺这一条路。
+        if event.button() == Qt.MouseButton.LeftButton and self._in_meadow(pos):
+            self.poke_meadow(pos)
+            return
         if event.button() == Qt.MouseButton.LeftButton and not self._in_btn(pos) \
                 and not self._hit_plank(pos) and self._hit_choice(pos) < 0:
             self.open_time_dialog()
@@ -201,7 +261,7 @@ class InteractMixin:
     def build_menu(self) -> QMenu:
         pal = self.pal
         font_px = max(11, int(round(9 * self.S * self._dpr / (self._dpr or 1.0))))
-        m = QMenu(self)
+        m = StayOpenMenu(self)
         m.setFont(self.font())
         m.setStyleSheet(style.menu_qss(pal, font_px, self.family))
 
@@ -212,45 +272,97 @@ class InteractMixin:
         a_home.setEnabled(self.snap.state == engine.ST_OVERTIME
                           and self._evening_choice != "home")
         a_reset = m.addAction("重置当日计时")
+        # 牛马记录：工时记在左、废话记在右，都是给老板打工这件事的存档。
+        # 不用"账本"——太像财务软件；牛马是自嘲，点开之前就已经笑了一下。
         m.addSeparator()
-        a_day = m.addAction("今日结算…")
-        a_week = m.addAction("一周…")
-        a_note = m.addAction("记一句…")
-        a_stats = m.addAction(f"查看累计加班时长（{engine.humanize(cumulative)}）")
-        m.addSeparator()
+        m_rec = StayOpenMenu("牛马日常", m)
+        m.addMenu(m_rec)
+        a_day = m_rec.addAction("今日结算…")
+        a_week = m_rec.addAction("一周…")
+        a_note = m_rec.addAction("吐槽两句…")
+        a_stats = m_rec.addAction(f"累计加班（{engine.humanize(cumulative)}）")
+
+        # 外观与声音：画面长什么样、有没有声。同属"这个挂件看起来如何"，合在一处。
+        m_show = StayOpenMenu("外观", m)
+        m.addMenu(m_show)
 
         # 窗口尺寸：三档单选，切换后立即重排（整数倍像素，不拉伸）
-        m_size = m.addMenu("窗口尺寸")
+        m_size = StayOpenMenu("窗口尺寸", m_show)
+        m_show.addMenu(m_size)
+        # 菜单点完不关，所以"单选"要自己维护：勾一个，把别的取消。
+        self._tier_actions = {}
         for key in TIER_ORDER:
             a = m_size.addAction(TIERS[key]["label"])
             a.setCheckable(True)
             a.setChecked(key == self._tier)
             a.triggered.connect(lambda _=False, k=key: self.set_tier(k))
+            self._tier_actions[key] = a
+        m_show.addSeparator()
 
         # 每日一句（小档不显示，标准 / 大档生效）
-        a_quote = m.addAction("每日一句")
+        a_quote = m_show.addAction("每日一句")
         a_quote.setCheckable(True)
         a_quote.setChecked(bool(self.cfg.get("ui.quote", True)))
         a_quote.setEnabled(not self._compact)
         a_quote.triggered.connect(self.toggle_quote)
 
-        # 天气只占一条：文字报"今天什么天"，勾选本身就是开关。
-        # 勾掉 = 这片天空什么天气都不要（连云一起收），所以晴天勾也有变化。
-        today_w = weather.weather_of(self._day)
-        on = bool(self.cfg.get("ui.fx.weather", True))
-        a_weather = m.addAction(f"天气：{weather.LABELS[today_w]}" + ("" if on else "（已关）"))
-        a_weather.setCheckable(True)
-        a_weather.setChecked(on)
-        a_weather.triggered.connect(self.toggle_weather)
+        # 拆成两个开关：天上飘的云、往下落的东西。不再用"晴/阴"这类气象词——
+        # 用户看得见的是画面元素，术语反而隔了一层。
+        clouds_on = bool(self.cfg.get("ui.fx.clouds",
+                                      self.cfg.get("ui.fx.weather", True)))
+        a_clouds = m_show.addAction("云朵")
+        a_clouds.setCheckable(True)
+        a_clouds.setChecked(clouds_on)
+        a_clouds.triggered.connect(self.toggle_clouds)
+
+        fall_on = bool(self.cfg.get("ui.fx.fall",
+                                    self.cfg.get("ui.fx.weather", True)))
+        a_fall = m_show.addAction(f"下落物：{self._fall_label()}" if fall_on
+                                  else "下落物：关")
+        a_fall.setCheckable(True)
+        a_fall.setChecked(fall_on)
+        a_fall.triggered.connect(self.toggle_fall)
+        self._act_fall = a_fall
+
+        # 动画流畅度：三档都在，默认那档由机器自己判断（见 _probe_fps）。
+        # 菜单里只摆三个具体档位，不摆"自动"——用户要的是"我现在跑哪一档"，
+        # 不是"程序是怎么决定的"。
+        m_fps = StayOpenMenu("流畅度", m_show)
+        m_show.addMenu(m_fps)
+        fps_now = self._fps_mode()
+        self._fps_actions = {}
+        for key, label in (("high", "高"),
+                           ("mid", "中"),
+                           ("low", "低（省电）")):
+            a_fps = m_fps.addAction(label)
+            a_fps.setCheckable(True)
+            a_fps.setChecked(fps_now == key)
+            a_fps.triggered.connect(lambda _=False, k=key: self.set_fps(k))
+            self._fps_actions[key] = a_fps
+
+        # 音效默认关：有人开着它工作，突然一声会吓一跳。想听的人自己打开。
+        snd_on = bool(self.cfg.get("ui.fx.sound", False))
+        a_snd = m_show.addAction("音效（下班、里程碑各一声）")
+        a_snd.setCheckable(True)
+        a_snd.setChecked(bool(self.cfg.get("ui.fx.sound", False)))
+        a_snd.triggered.connect(self.toggle_sound)
+        # 「试听」只给源码版：打包成 exe 以后 `sys.frozen` 为真，这一行自动消失。
+        # 正式版不需要它——音效是装饰，不该在菜单里多占一格。
+        if not getattr(sys, "frozen", False):
+            a_snd_try = m_show.addAction("　试听一下")
+            a_snd_try.triggered.connect(self.preview_sound)
 
         m.addSeparator()
         secs = self.cfg.get("passthrough_seconds", 3)
-        a_pt = m.addAction(f"临时穿透（{secs:g} 秒）")
+        # "穿透"是行话，用户不懂；他真正要的是"这几秒别挡我鼠标"
+        a_pt = m.addAction(f"暂时不挡鼠标（{secs:g} 秒）")
         auto_on = win32.autostart_enabled()
         a_auto = m.addAction(f"开机自启：{'开' if auto_on else '关'}")
         m.addSeparator()
         a_hide = m.addAction("最小化到托盘")
-        a_about = m.addAction(f"关于 MC 工时牌 {__version_label__}…")
+        # 版本号不摆在菜单里：菜单窄，长版本号会被截成"v1.1…"，
+        # 想看版本的人点进去，那里有整行大字还能一键复制。
+        a_about = m.addAction("关于…")
         a_about.triggered.connect(self.open_about_dialog)
         a_quit = m.addAction("退出")
 
@@ -357,7 +469,7 @@ class InteractMixin:
         from ..dialogs import NoteDialog
 
         dlg = NoteDialog(self, self.cfg, self.pal, self._base_s, self._dpr,
-                         self.store.note(self._day))
+                         self.store.note(self._day), day=self._day)
         if dlg.exec():
             self.store.set_note(self._day, dlg.text())
             self.store.save()
@@ -410,6 +522,94 @@ class InteractMixin:
             pass
         self.update()
 
+
+    POKE_DUR = 0.42      # 冲击到完全复位的时间
+
+    def poke_meadow(self, pos_logical: QPoint | None = None) -> None:
+        """点一下草地：以落点为圆心，中间的花被顶开，四周的往外倒。
+
+        主窗口一秒才重绘一次，只设一个"按下"状态的话，这 0.4 秒只会显示一帧——
+        看着就是"花突然没了又突然回来"。所以冲击要自己开一条 16ms 的短定时器，
+        一帧一帧画出去：开头位移最大，随后按平方衰减收回，才像被一股力推开。
+        """
+        if pos_logical is not None:
+            dpr = self._dpr or 1.0
+            self._poke_x = int(pos_logical.x() * dpr)
+        self._poke_t0 = _time.perf_counter()
+        if getattr(self, "_poke_timer", None) is None:
+            t = QTimer(self)
+            t.setInterval(16)
+            t.timeout.connect(self._poke_frame)
+            self._poke_timer = t
+        self._poke_timer.start()
+        self.update()
+
+    def _poke_frame(self) -> None:
+        t0 = getattr(self, "_poke_t0", None)
+        if t0 is None or _time.perf_counter() - t0 >= self.POKE_DUR:
+            self._poke_timer.stop()
+        self.update()
+
+    def preview_sound(self) -> None:
+        """试听：不受开关限制，点了就响——用来确认"到底有没有声音"。"""
+        from .. import sound
+        sound.play("milestone")
+
+    def _fall_label(self) -> str:
+        """今天会往下掉什么：雨、雪、落叶，或者什么都不掉。"""
+        w = weather.weather_of(self._day)
+        if w in weather.PRECIP:
+            return "雪" if w in weather.SNOWY else "雨"
+        if season.season_of(self._day) == season.AUTUMN:
+            return "落叶"
+        return "无"
+
+    def toggle_clouds(self) -> None:
+        on = not bool(self.cfg.get("ui.fx.clouds",
+                                   self.cfg.get("ui.fx.weather", True)))
+        self.cfg.set("ui.fx.clouds", on)
+        try:
+            self.cfg.save()
+        except Exception:
+            pass
+        self.update()
+
+    def toggle_fall(self) -> None:
+        on = not bool(self.cfg.get("ui.fx.fall",
+                                   self.cfg.get("ui.fx.weather", True)))
+        self.cfg.set("ui.fx.fall", on)
+        act = getattr(self, "_act_fall", None)
+        if act is not None:
+            act.setText(f"下落物：{self._fall_label()}" if on else "下落物：关")
+        try:
+            self.cfg.save()
+        except Exception:
+            pass
+        self._sync_rain_timer()
+        self.update()
+
+    def set_fps(self, key: str) -> None:
+        """切换流畅度。切换后立刻按新档位重启定时器，不用等下一次 tick。"""
+        for k, act in getattr(self, "_fps_actions", {}).items():
+            act.setChecked(k == key)
+        self.cfg.set("ui.fx.fps", key)
+        try:
+            self.cfg.save()
+        except Exception:
+            pass
+        self._sync_rain_timer()
+        self.update()
+
+    def toggle_sound(self) -> None:
+        on = not bool(self.cfg.get("ui.fx.sound", False))
+        self.cfg.set("ui.fx.sound", on)
+        try:
+            self.cfg.save()
+        except Exception:
+            pass
+        if on:
+            from .. import sound
+            sound.play("milestone")     # 打开时自己听一声，算试听
 
     def toggle_weather(self) -> None:
         on = not bool(self.cfg.get("ui.fx.weather", True))

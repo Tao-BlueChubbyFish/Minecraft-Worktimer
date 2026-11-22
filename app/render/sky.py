@@ -41,7 +41,15 @@ _SKY_DAWN_H = 6.2            # 曲线里"日出"的锚点小时
 _SKY_NIGHT_H = 20.8          # 曲线里"入夜"的锚点小时
 
 
-def work_sky_hour(real_hour: float, start_hour: float, span_hours: float) -> float:
+# 每季的日出 / 入夜锚点（曲线小时）。数字越大 = 曲线越晚 = 天色越暗。
+# 夏天日照长，下班时天还亮着，所以入夜锚点要**小**；冬天反过来，18:00 已经黑了。
+# 第一版写反了（夏天给了 21.9），结果同一时刻夏天比冬天还黑。
+_DAWN_BY_SEASON = {"spring": 6.2, "summer": 5.6, "autumn": 6.5, "winter": 6.9}
+_NIGHT_BY_SEASON = {"spring": 20.4, "summer": 18.8, "autumn": 20.2, "winter": 22.4}
+
+
+def work_sky_hour(real_hour: float, start_hour: float, span_hours: float,
+                  season: str | None = None) -> float:
     """把真实钟点换算成"进度条里的天色小时"。
 
     曲线本身是按 24 小时做的：04:30 日出、12:00 正午、19:00 日落、20:30 入夜。
@@ -51,14 +59,19 @@ def work_sky_hour(real_hour: float, start_hour: float, span_hours: float) -> flo
     所以把 [上班, 上班 + span] 整段线性映射到曲线的 [日出, 入夜]：
     开工那一刻天刚亮，下午转暖，快下班时日落，加班时天彻底黑。
     上班之前 = 天刚亮；下班之后夜色继续慢慢加深（斜率减半），不会到点卡死。
+
+    季节只挪两端的锚点：冬天日出晚、入夜早，夏天反过来。中间那段映射不变，
+    所以同一段工作时间里感受到的"天黑速度"变了——这才是换季最直接的体感。
     """
+    dawn = _DAWN_BY_SEASON.get(season or "", _SKY_DAWN_H)
+    night = _NIGHT_BY_SEASON.get(season or "", _SKY_NIGHT_H)
     span = max(1.0, span_hours)
     t = (real_hour - start_hour) / span
     if t <= 0.0:
-        return _SKY_DAWN_H
+        return dawn
     if t <= 1.0:
-        return _SKY_DAWN_H + t * (_SKY_NIGHT_H - _SKY_DAWN_H)
-    return min(23.9, _SKY_NIGHT_H + (real_hour - start_hour - span) * 0.5)
+        return dawn + t * (night - dawn)
+    return min(23.9, night + (real_hour - start_hour - span) * 0.5)
 
 
 def _mix(a: str, b: str, t: float) -> QColor:
