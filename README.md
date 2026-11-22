@@ -14,7 +14,7 @@
 | **蓝奏云**（国内推荐） | https://wwbpm.lanzoue.com/i7VMs4gztl5g | 提取码 `1wne`，国内直连、速度快 |
 | GitHub Releases | [Releases](../../releases) | 官方版本，国内可能需要网络加速 |
 
-下载后双击 `MCWorkTimer_v1.3.exe` 就能用，不需要装 Python。
+下载后双击 `MCWorkTimer_v1.4.exe` 就能用，不需要装 Python。
 首次运行如果提示「已保护你的电脑」，点「更多信息」→「仍要运行」。
 
 ## 它长什么样
@@ -305,7 +305,7 @@ pythonw main.py
 详细环境、参数、数据格式见 [环境配置说明.md](docs/环境配置说明.md)。
 打包单文件 exe 见同级 `打包工程` 文件夹。
 
-> `启动.bat`（走 Python）和 `MCWorkTimer_v1.3.exe`（免安装）的 `data.json` 不在同一个目录，
+> `启动.bat`（走 Python）和 `MCWorkTimer_v1.4.exe`（免安装）的 `data.json` 不在同一个目录，
 > 挑一个长期用，不要混着开，否则加班台账会分成两份。
 
 ## 代码结构

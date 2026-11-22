@@ -1,6 +1,8 @@
 {
-  "version": "1.3.0",
+  "version": "1.4.0",
   "url": "https://github.com/Tao-BlueChubbyFish/Minecraft-Worktimer/releases/latest",
   "url_cn": "https://wwbpm.lanzoue.com/i7VMs4gztl5g",
-  "cn_password": "1wne"
+  "cn_password": "1wne",
+  "asset": "https://github.com/Tao-BlueChubbyFish/Minecraft-Worktimer/releases/download/v1.4/MCWorkTimer_v1.4.exe",
+  "size": 37366562
 }
