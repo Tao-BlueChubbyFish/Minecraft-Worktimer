@@ -3,7 +3,7 @@
 这不是程序的一部分，只是"检查用的相机"。
 
 用法：
-    python tools/baseline_shots.py <输出目录>
+    python tools/baseline_shots.py <输出目录> [--season=spring|summer|autumn|winter]
 
 要点：
 * 全部用固定日期（2026-11-19 周四 / 11-21 周六），文案与花海按日期取种子，
@@ -61,11 +61,23 @@ def _freeze_time() -> None:
 
 _freeze_time()
 
-DAY = date(2026, 11, 19)        # 周四
-SAT = date(2026, 11, 21)        # 周六
+# 四个季节各用一组同星期几的固定日期：季节换色换雪以后，只靠一套秋天的底片
+# 就没法验证"改夏天有没有碰坏冬天"。--season 决定拍哪一季。
+SEASON_DAYS = {
+    "spring": (date(2026, 4, 16), date(2026, 4, 18)),
+    "summer": (date(2026, 7, 16), date(2026, 7, 18)),
+    "autumn": (date(2026, 11, 19), date(2026, 11, 21)),
+    "winter": (date(2026, 12, 17), date(2026, 12, 19)),
+}
+_args = [a for a in sys.argv[1:] if not a.startswith("--")]
+_season = next((a.split("=", 1)[1] for a in sys.argv[1:] if a.startswith("--season=")), "autumn")
+if _season not in SEASON_DAYS:
+    raise SystemExit(f"--season 只能是 {', '.join(SEASON_DAYS)}")
+
+DAY, SAT = SEASON_DAYS[_season]     # 周四 / 周六
 WORK_START = time(9, 0)
 
-OUT = Path(sys.argv[1] if len(sys.argv) > 1 else ROOT / "assets" / "baseline")
+OUT = Path(_args[0] if _args else ROOT / "assets" / "baseline")
 OUT.mkdir(parents=True, exist_ok=True)
 
 _count = 0
@@ -113,6 +125,11 @@ def shoot(w: TimerWidget, name: str, zoom: int = 2) -> None:
     print(f"  {name:22s} {img.width():4d}x{img.height():4d}")
 
 
+def DT(h: int, m: int) -> datetime:
+    """这一天（DAY）的 h:m。底片要按季节换日期，所以时刻不能写死。"""
+    return datetime.combine(DAY, time(h, m))
+
+
 def time_at_ratio(rule, ratio: float) -> datetime:
     """找出进度条最接近某个百分比的时刻（用来拍 19% / 53% / 84% 的道具）。"""
     best = None
@@ -130,10 +147,10 @@ def main() -> None:
     w = fresh("main")
 
     print("基本一天")
-    for name, when in (("01_before", datetime(2026, 11, 19, 8, 30)),
-                       ("02_morning", datetime(2026, 11, 19, 10, 20)),
-                       ("03_lunch", datetime(2026, 11, 19, 12, 30)),
-                       ("04_afternoon", datetime(2026, 11, 19, 16, 10))):
+    for name, when in (("01_before", DT(8, 30)),
+                       ("02_morning", DT(10, 20)),
+                       ("03_lunch", DT(12, 30)),
+                       ("04_afternoon", DT(16, 10))):
         pose(w, when)
         shoot(w, name)
 
@@ -146,7 +163,7 @@ def main() -> None:
     w._animating = True
     w._anim_ratio = 0.55
     w._roll_lift = 1
-    pose(w, datetime(2026, 11, 19, 14, 0))
+    pose(w, DT(14, 0))
     shoot(w, "06_rolling")
     w._animating = False
     w._roll_lift = 0
@@ -157,25 +174,25 @@ def main() -> None:
     w._roll_lift = 2
     w._greet_text = quotes.milestone_text(0.76, DAY)
     w._greet_until = 1e18
-    pose(w, datetime(2026, 11, 19, 15, 30))
+    pose(w, DT(15, 30))
     shoot(w, "07_milestone")
     w._fx_kind, w._fx_t, w._roll_lift = "", 0.0, 0
-    w._greet_text = quotes.greeting(engine.ST_WORKING, datetime(2026, 11, 19, 9, 5),
+    w._greet_text = quotes.greeting(engine.ST_WORKING, DT(9, 5),
                                     w.rule.lunch_start)
     w._greet_until = 1e18
-    pose(w, datetime(2026, 11, 19, 9, 6))
+    pose(w, DT(9, 6))
     shoot(w, "08_greeting")
     w._greet_text, w._greet_until = "", 0.0
 
     print("鸟群三种队形位置")
     for fl in (0.2, 0.5, 0.8):
-        pose(w, datetime(2026, 11, 19, 11, 0))
+        pose(w, DT(11, 0))
         w._fx_kind, w._fx_dur, w._fx_t = "life", 17.0, fl
         shoot(w, f"09_birds_{int(fl * 100)}")
     w._fx_kind, w._fx_t = "", 0.0
 
     print("到点：木牌 / 悬停 / 展开")
-    pose(w, datetime(2026, 11, 19, 18, 1))
+    pose(w, DT(18, 1))
     w._evening_choice = None
     w._offer_open = False
     w._plank_text = ""
@@ -197,45 +214,45 @@ def main() -> None:
     w._fx_kind, w._fx_dur = "home", 5.0
     for tt in (0.18, 0.42, 0.66, 0.90):
         w._fx_t = tt
-        pose(w, datetime(2026, 11, 19, 18, 3))
+        pose(w, DT(18, 3))
         shoot(w, f"14_celebrate_{int(tt * 100)}")
     w._fx_kind, w._fx_t, w._plank_text = "", 0.0, ""
 
     print("收工后 / 加班中 / 入夜")
-    pose(w, datetime(2026, 11, 19, 18, 30))
+    pose(w, DT(18, 30))
     shoot(w, "15_home_done")
     w._evening_choice = "overtime"
-    pose(w, datetime(2026, 11, 19, 19, 40))
+    pose(w, DT(19, 40))
     shoot(w, "16_overtime")
-    pose(w, datetime(2026, 11, 19, 20, 30))
+    pose(w, DT(20, 30))
     shoot(w, "17_night")
 
     print("休息日 / 未设置 / 穿透锁定")
-    pose(w, datetime(2026, 11, 21, 11, 0))
+    pose(w, datetime.combine(SAT, time(11, 0)))
     w._evening_choice = None
     w._plank_text = ""
     shoot(w, "18_weekend")
 
     unset = fresh("unset", with_start=False)
-    pose(unset, datetime(2026, 11, 19, 10, 20))
+    pose(unset, DT(10, 20))
     shoot(unset, "19_unset")
 
     w._pt_active = True
-    pose(w, datetime(2026, 11, 19, 10, 20))
+    pose(w, DT(10, 20))
     shoot(w, "20_passthrough")
     w._pt_active = False
 
     print("进度条另一种样式（纯色）")
     plain = fresh("plain", tune=lambda c: c.set("ui.progress_style", "plain"))
-    pose(plain, datetime(2026, 11, 19, 10, 20))
+    pose(plain, DT(10, 20))
     shoot(plain, "21_plain_bar")
 
     print("小档")
     sm = fresh("small")
     sm.set_tier("small")
-    pose(sm, datetime(2026, 11, 19, 10, 20))
+    pose(sm, DT(10, 20))
     shoot(sm, "22_small")
-    pose(sm, datetime(2026, 11, 19, 18, 1))
+    pose(sm, DT(18, 1))
     sm._evening_choice = None
     sm._plank_text = ""
     shoot(sm, "23_small_plank")

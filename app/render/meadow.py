@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import math
+import os
 import random
 
 from PySide6.QtCore import QPoint, QPointF, QRect, Qt
@@ -15,8 +16,10 @@ from .. import pixel_font
 from .palette import _curve_at, c  # noqa: E402
 from .common import _grass_tones, fill, texture  # noqa: E402
 from .sky import _draw_flock, _draw_sky  # noqa: E402
-from .weather import draw_downpour, draw_rain, draw_tint  # noqa: E402
-from ..weather import CLEAR, CLOUDY, DOWNPOUR, RAIN, RAINY  # noqa: E402
+from .weather import (draw_downpour, draw_leaves, draw_rain,  # noqa: E402
+                      draw_snow, draw_tint)
+from ..weather import (BLIZZARD, CLEAR, CLOUDY, DOWNPOUR, PRECIP,  # noqa: E402
+                       RAIN, RAINY, SNOWY)
 
 _SPECIES: dict[str, dict] = {
     # 花冠统一 4 行高，宽 4~5 格：同一条花带里花冠顶是对齐的，不会高高低低连成彩边。
@@ -78,23 +81,40 @@ _PETAL_COLORS = ("#c4433c", "#e5c63c", "#eef0e4", "#5a7fd0", "#a978c2", "#d9782f
                   "#8fb6ee", "#f0b429", "#cf6fae")
 
 
-_day_picks_cache: dict[int, tuple[int, ...]] = {}
+_day_picks_cache: dict[tuple[int, str], tuple[int, ...]] = {}
+
+# 每季能开哪几种花。不是换花色，是换品种——秋天草地上不该有红罂粟和白雏菊，
+# 那两样是春天的记号；冬天只剩耐寒的几种，寥寥几朵。
+_SEASON_POOL: dict[str, tuple[str, ...]] = {
+    "spring": ("poppy", "oxeye", "tulip", "allium", "dandelion", "bluet", "orchid"),
+    "summer": ("poppy", "cornflower", "allium", "sunflower", "oxeye", "tulip"),
+    "autumn": ("dandelion", "sunflower", "tulip", "allium", "orchid"),
+    "winter": ("oxeye", "allium", "orchid"),
+}
 
 
-def _day_picks(seed_day: int) -> tuple[int, ...]:
+def _day_picks(seed_day: int, season: str | None = None) -> tuple[int, ...]:
     """每天固定五种花：主色 / 副色 / 点缀 / 两种稀少。
 
     只有三种时，天天看都是那三色，跟 MC 的花田比太单调；但七种平均撒下去又会
     变成"彩纸"。折中是**五种、权重很陡**（4 : 3 : 2 : 1.5 : 1）——主色仍占大头，
     稀有的那两种一天只露几朵，负责"今天好像不一样"。
+
+    候选池按季节收窄：秋天只留暖色，冬天只留耐寒的三种。所以"换季"换的不只是
+    颜色，还包括**这一季能开什么花**。
     """
-    hit = _day_picks_cache.get(seed_day)
+    key = (seed_day, season or "")
+    hit = _day_picks_cache.get(key)
     if hit is None:
         r = random.Random(seed_day * 977 + 3)
-        hit = tuple(r.sample(range(len(_PETAL_COLORS)), 5))
+        pool = [i for i, name in enumerate(_SPECIES_ORDER)
+                if not season or name in _SEASON_POOL.get(season, _SPECIES_ORDER)]
+        if len(pool) < 5:
+            pool = list(range(len(_PETAL_COLORS)))
+        hit = tuple(r.sample(pool, 5))
         if len(_day_picks_cache) > 64:
             _day_picks_cache.clear()
-        _day_picks_cache[seed_day] = hit
+        _day_picks_cache[key] = hit
     return hit
 
 
@@ -117,6 +137,30 @@ def _draw_head(p: QPainter, left: int, top: int, s: int, head, colors: dict,
                 fill(p, left + rx * s, top + ry * s, s, s, _shade(QColor(col), dim))
 
 
+_WINTER_COLORS: dict[str, dict] = {}
+
+
+def _colors_for(key: str, pal: dict) -> dict:
+    """冬天把花色压一半，但**不抽干**。
+
+    试过抽到 0.14，草地直接变成黑白老屏幕——那不是冬天，是显像管坏了。
+    冬天该是"冷而淡"，不是"没有颜色"，所以保留色相、只降饱和。
+    结果按品种缓存，几百朵花共用一份。
+    """
+    if (pal.get("_season") or "") != "winter":
+        return _SPECIES[key]["colors"]
+    hit = _WINTER_COLORS.get(key)
+    if hit is None:
+        hit = {}
+        for k, v in _SPECIES[key]["colors"].items():
+            q = QColor(v)
+            h, s, val, a = q.getHsvF()
+            hit[k] = QColor.fromHsvF(h if h >= 0 else 0.0,
+                                     min(1.0, s * 0.55), val * 0.97).name()
+        _WINTER_COLORS[key] = hit
+    return hit
+
+
 def _draw_flower(p: QPainter, cx: int, gy: int, s: int, key: str, height_u: int,
                  paused: bool, pal: dict, dim: float = 1.0,
                  stem: bool = True) -> None:
@@ -127,6 +171,7 @@ def _draw_flower(p: QPainter, cx: int, gy: int, s: int, key: str, height_u: int,
     "花自己开在花海里"。真茎只留给最高的那一层（它们高到必须撑一下）。
     """
     sp = _SPECIES[key]
+    colors = _colors_for(key, pal)
     stem_col = QColor(pal["grass"][2]).darker(114)
     stem_hi = QColor(pal["grass"][1]).darker(102)
     h = max(0, height_u) * s
@@ -138,12 +183,12 @@ def _draw_flower(p: QPainter, cx: int, gy: int, s: int, key: str, height_u: int,
     if paused:
         # 午休：花收成花苞
         fill(p, cx - s, gy - h - s, 2 * s, s, stem_col.darker(112))
-        fill(p, cx, gy - h - 2 * s, s, s, _shade(QColor(sp["colors"]["b"]), dim))
+        fill(p, cx, gy - h - 2 * s, s, s, _shade(QColor(colors["b"]), dim))
         return
     head = sp["head"]
     hw = len(head[0])
     left = cx - ((hw - 1) // 2) * s
-    _draw_head(p, left, gy - h - (len(head) - 1) * s, s, head, sp["colors"], dim)
+    _draw_head(p, left, gy - h - (len(head) - 1) * s, s, head, colors, dim)
 
 
 def _draw_tuft(p: QPainter, cx: int, gy: int, s: int, pal: dict, rng: random.Random) -> None:
@@ -195,7 +240,8 @@ def _draw_blossom(p: QPainter, x: int, gy: int, s: int, rng: random.Random,
 
 
 def _draw_flower_field(p: QPainter, ix: int, gy: int, cols: int, s: int, pal: dict,
-                       seed_day: int, paused: bool, sky_u: int, dim: float = 1.0) -> None:
+                       seed_day: int, paused: bool, sky_u: int, dim: float = 1.0,
+                       press: int = 0, press_x: int | None = None) -> None:
     """已开垦的草地，按高度分成四条带，各自横向排，互不挤在同一行。
 
     这套画法解决的是"铺满就糊"的问题。糊的原因有两个，且是叠加的：
@@ -215,7 +261,7 @@ def _draw_flower_field(p: QPainter, ix: int, gy: int, cols: int, s: int, pal: di
 
     # 当天只开三种花（主色 / 副色 / 点缀），和贴地花毯同一套配色。
     # 七种颜色全上，画面是"花"；三种成片，才是"一片花田"。
-    picked = _day_picks(seed_day)
+    picked = _day_picks(seed_day, pal.get("_season"))
 
     def pick(weights=(4, 3, 2, 1.5, 1)) -> str:
         # 蓝亚麻只有 2×2，做花冠太碎、密了像噪点，只让它留在下面的贴地花毯里
@@ -247,14 +293,33 @@ def _draw_flower_field(p: QPainter, ix: int, gy: int, cols: int, s: int, pal: di
         (1, 2, 2, 0.86, False),     # 主层：最密，不带茎，花冠落在 2~5
         (12, 0, 5, 0.62, False),    # 贴地：花冠落在 0~3
     )
+    # 冬天的花要稀：灰草地上开满鲜花是假的。秋天略减，像开败了。
+    rate_mul = {"winter": 0.26, "autumn": 0.80}.get(pal.get("_season") or "", 1.0)
     for lx, h, gap, rate, st in layers:
         x = lx
         while x < cols - 4:
-            if rng.random() < rate:
+            if rng.random() < rate * rate_mul:
                 key = pick()
-                if h == 0 or top_u - len(_SPECIES[key]["head"]) - 1 >= h:
-                    _draw_flower(p, ix + x * s, gy, s, key, h, paused, pal, dim,
-                                 stem=st)
+                cx = ix + x * s
+                h_eff = h
+                # 点下去是一次冲击：中间的花被顶开、四周向外倒。
+                # 不做成"整片压矮"——那样像地震；花海该像水面，中心一圈空出来，
+                # 外圈往两边挤，才读得出"被一股力推开了"。
+                if press and press_x is not None:
+                    dd = cx - press_x
+                    ad = abs(dd)
+                    if ad <= 5 * s * press:
+                        # 冲击中心：这一圈直接被顶开，空出一个洞
+                        x += hw_of(key) + gap + rng.randint(0, 2)
+                        continue
+                    if ad <= 14 * s:
+                        # 外圈往外推：离中心越近推得越远，推完顺势倒一点
+                        k = (14 * s - ad) / (9 * s)
+                        cx += int(round(press * 5 * s * k)) * (1 if dd > 0 else -1)
+                        h_eff = max(0, h - int(round(2 * press)))
+                if h_eff == 0 or top_u - len(_SPECIES[key]["head"]) - 1 >= h_eff:
+                    _draw_flower(p, cx, gy, s, key, h_eff, paused,
+                                 pal, dim, stem=st)
                     x += hw_of(key) + gap + rng.randint(0, 2)
                     continue
             x += rng.randint(3, 6)
@@ -264,7 +329,7 @@ def _draw_flower_field(p: QPainter, ix: int, gy: int, cols: int, s: int, pal: di
         return
     x = 0
     while x < cols - 2:
-        if rng.random() < 0.55:
+        if rng.random() < 0.55 * rate_mul:
             for k in range(rng.randint(2, 3)):
                 bx = x + k * 2
                 if bx < cols - 1:
@@ -442,6 +507,54 @@ def _draw_props(p: QPainter, ix: int, gy: int, iw: int, s: int, pal: dict,
             _prop_stones(p, cx, gy, s, pal)
 
 
+# 地面层（泥土剖面 + 草皮 + 草叶 + 花）的离屏缓存。
+# 这一层只在"进度前进一格 / 换小时 / 换季 / 换天"时变，却占掉一帧七成的绘制量
+# （1500 多次填色 + 1000 多次取随机数），所以整块存成一张透明图，平时每帧只贴一次。
+# 冲击波要顶开花，那一瞬不走缓存——0.42 秒，值不回一次失效。
+_ground_cache: dict = {"key": None, "img": None}
+
+# 排查开关：怀疑画面被缓存搞脏了，用 MCW_NO_CACHE=1 启动就能退回逐帧直画对照
+_NO_CACHE = os.environ.get("MCW_NO_CACHE") == "1"
+
+
+def _paint_ground(p: QPainter, ix: int, gy: int, dirt_y: int, cols: int, s: int,
+                  ground_u: int, grass_u: int, sky_u: int, pal: dict,
+                  seed_day: int, paused: bool, dim: float,
+                  press: int, press_x: int | None) -> None:
+    """把"已开垦区"整段画出来（坐标是窗口绝对坐标，调用方需自行平移）。
+
+    抽出来只为一件事：让这段能在离屏图上重画、再贴回主画布。
+    """
+    p.drawImage(QPoint(ix, dirt_y), texture("dirt", cols, ground_u - grass_u, s, pal))
+    rng = random.Random((seed_day * 31 + 7) & 0x7FFFFFFF)
+    for _ in range(max(1, cols // 6)):
+        bx = ix + rng.randrange(max(1, cols)) * s
+        by = dirt_y + (1 + rng.randrange(max(1, max(1, ground_u - grass_u - 2)))) * s
+        col = QColor(pal["dirt"][-1]).darker(126)
+        fill(p, bx, by, s, s, col)
+        if rng.random() < 0.5:
+            fill(p, bx + s, by, s, s, col.lighter(112))
+
+    p.drawImage(QPoint(ix, gy), texture("grass", cols, grass_u, s, pal))
+    rng = random.Random((seed_day * 53 + 11) & 0x7FFFFFFF)
+
+    # 草叶也用收敛后的四档近色：单根草叶不该比整条绿带还显眼
+    tones = [QColor(x) for x in _grass_tones(pal)]
+    for cidx in range(cols):
+        cx = ix + cidx * s
+        jag = rng.choice((0, 0, 0, 1, 1, 2))
+        fill(p, cx, dirt_y + jag * s, s, s, tones[-1].darker(130))
+        if rng.random() < 0.30:
+            bh = s if rng.random() < 0.7 else 2 * s
+            fill(p, cx, gy - bh, s, bh, tones[rng.randrange(len(tones))])
+
+    # 草皮卷脚下留 2 单位新铺的裸草：刚铺开的草皮本来就还没长花，
+    # 顺带让卷的轮廓不糊在花丛里
+    flower_cols = max(0, cols - 2)
+    _draw_flower_field(p, ix, gy, flower_cols, s, pal, seed_day, paused, sky_u,
+                       dim=dim, press=press, press_x=press_x)
+
+
 def draw_meadow_bar(p: QPainter, x: int, y: int, w: int, h: int, s: int, pal: dict,
                     ratio: float, paused: bool = False, seed_day: int = 0,
                     hour: float = 12.0, secs: float = 0.0,
@@ -450,7 +563,9 @@ def draw_meadow_bar(p: QPainter, x: int, y: int, w: int, h: int, s: int, pal: di
                     landmark_passed: bool = False,
                     flock: tuple[float, float] | None = None,
                     moon: bool = True, props: bool = True,
-                    weather: str | None = "clear") -> None:
+                    weather: str | None = "clear", press: int = 0,
+                    press_x: int | None = None,
+                    clouds: bool = True, fall: bool = True) -> None:
     """草地进度条：一整条花海剖面，天空在上一路铺满。
 
     分层自下而上：泥土剖面 → 锯齿草皮 → 草叶与花 → 天空（云会飘、天色随钟点变）。
@@ -491,16 +606,20 @@ def draw_meadow_bar(p: QPainter, x: int, y: int, w: int, h: int, s: int, pal: di
     p.setClipRect(QRect(ix, iy, iw, ih))
 
     # 1) 天空：整条通铺，云按秒横移，天色随钟点连续渐变
+    # 压色跟着"云"走：没有云，天就不该暗下来——用户关掉的是云，不是白天
     mul = float(pal.get("sky_mul", 1.0) or 1.0)
-    if weather == DOWNPOUR:        # 大雨：天压得最暗，云几乎看不出层次
-        mul *= 0.58
-    elif weather == RAIN:          # 阴雨天：天色压暗且降饱和，云也跟着发灰
-        mul *= 0.70
-    elif weather == CLOUDY:
-        mul *= 0.86
+    if clouds and weather is not None:
+        if weather == BLIZZARD:        # 大雪：压暗，但比大雨亮一档——雪是反光的
+            mul *= 0.68
+        elif weather == DOWNPOUR:      # 大雨：天压得最暗，云几乎看不出层次
+            mul *= 0.58
+        elif weather == RAIN:          # 阴雨天：天色压暗且降饱和，云也跟着发灰
+            mul *= 0.70
+        elif weather == CLOUDY:
+            mul *= 0.86
     bands = _draw_sky(p, ix, iy, iw, sky_u, s, hour, secs, seed_day, mul,
-                      moon and weather not in RAINY,
-                      clouds=weather is not None)
+                      moon and weather not in PRECIP,
+                      clouds=clouds and weather is not None)
     fill(p, ix, gy - s, iw, s, bands[-1].lighter(104))     # 地平线亮线
 
     ratio = max(0.0, min(1.0, ratio))
@@ -522,35 +641,36 @@ def draw_meadow_bar(p: QPainter, x: int, y: int, w: int, h: int, s: int, pal: di
             x0 += bw
         fill(p, fx, gy, ix + iw - fx, s, QColor(pal["track"][0]).darker(150))
 
-    # 3) 已开垦区：泥土剖面 + 草皮 + 花海
+    # 3) 已开垦区：泥土剖面 + 草皮 + 花海（整块走离屏缓存，见 _paint_ground）
     if cols >= 1:
-        p.drawImage(QPoint(ix, dirt_y), texture("dirt", cols, ground_u - grass_u, s, pal))
-        rng = random.Random((seed_day * 31 + 7) & 0x7FFFFFFF)
-        for _ in range(max(1, cols // 6)):
-            bx = ix + rng.randrange(max(1, cols)) * s
-            by = dirt_y + (1 + rng.randrange(max(1, max(1, ground_u - grass_u - 2)))) * s
-            col = QColor(pal["dirt"][-1]).darker(126)
-            fill(p, bx, by, s, s, col)
-            if rng.random() < 0.5:
-                fill(p, bx + s, by, s, s, col.lighter(112))
-
-        p.drawImage(QPoint(ix, gy), texture("grass", cols, grass_u, s, pal))
-        rng = random.Random((seed_day * 53 + 11) & 0x7FFFFFFF)
-        # 草叶也用收敛后的四档近色：单根草叶不该比整条绿带还显眼
-        tones = [QColor(x) for x in _grass_tones(pal)]
-        for cidx in range(cols):
-            cx = ix + cidx * s
-            jag = rng.choice((0, 0, 0, 1, 1, 2))
-            fill(p, cx, dirt_y + jag * s, s, s, tones[-1].darker(130))
-            if rng.random() < 0.30:
-                bh = s if rng.random() < 0.7 else 2 * s
-                fill(p, cx, gy - bh, s, bh, tones[rng.randrange(len(tones))])
-
-        # 草皮卷脚下留 2 单位新铺的裸草：刚铺开的草皮本来就还没长花，
-        # 顺带让卷的轮廓不糊在花丛里
-        flower_cols = max(0, cols - 2)
-        _draw_flower_field(p, ix, gy, flower_cols, s, pal, seed_day, paused, sky_u,
-                           dim=max(0.55, min(1.0, _curve_at(hour)[2])))
+        dim = max(0.55, min(1.0, _curve_at(hour)[2]))
+        if _NO_CACHE:                          # 排查用：MCW_NO_CACHE=1 时退回逐帧直画
+            _paint_ground(p, ix, gy, dirt_y, cols, s, ground_u, grass_u, sky_u,
+                          pal, seed_day, paused, dim, press, press_x)
+        else:
+            cap_u = sky_u                      # 高枝能长到贴天顶，缓存图就照整段天空留
+            cap_y = gy - cap_u * s
+            # 花冠会向左/右探出已开垦区几个单位（贴着开垦区边缘的那朵最明显），
+            # 缓存图得留出余量，否则边上那朵会被图边裁掉半个脑袋。
+            mg = 6 * s
+            key = (cols, s, ground_u, grass_u, seed_day, paused, press, press_x,
+                   int(dim * 20), pal.get("_season"), pal.get("_rev"),
+                   tuple(pal.get("grass") or ()), tuple(pal.get("dirt") or ()))
+            img = _ground_cache["img"] if _ground_cache["key"] == key else None
+            if img is None:
+                img = QImage(cols * s + 2 * mg, (cap_u + ground_u) * s,
+                             QImage.Format.Format_ARGB32_Premultiplied)
+                img.fill(Qt.GlobalColor.transparent)
+                gp = QPainter(img)
+                gp.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+                gp.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
+                gp.translate(mg - ix, -cap_y)
+                _paint_ground(gp, ix, gy, dirt_y, cols, s, ground_u, grass_u, sky_u,
+                              pal, seed_day, paused, dim, press, press_x)
+                gp.end()
+                if press <= 0:                 # 冲击波那几帧不覆盖缓存，散了立刻复用
+                    _ground_cache["key"], _ground_cache["img"] = key, img
+            p.drawImage(QPoint(ix - mg, cap_y), img)
 
     # 3.4) 草地上的道具：画在花之后，不然全被花挡住
     if props:
@@ -574,14 +694,23 @@ def draw_meadow_bar(p: QPainter, x: int, y: int, w: int, h: int, s: int, pal: di
         _draw_flock(p, flock[0], flock[1], ix, iy, iw, sky_u, s, seed_day)
 
     # 4.6) 天气：先压一层冷色（盖住天与地），再把雨丝落到最上面
-    if weather != CLEAR:
+    if clouds and weather not in (None, CLEAR):
         draw_tint(p, ix, iy, iw, sky_u * s, ground_u * s, weather)
-        if weather in RAINY:
-            # 雨只落在天空那一段：落到花海上会变成一片噪点，花海才是主角
-            if weather == DOWNPOUR:
+    if fall and weather is not None:
+        if weather in PRECIP:
+            # 降水只落在天空那一段：落到花海上会变成一片噪点，花海才是主角
+            if weather in SNOWY:
+                draw_snow(p, ix, iy, iw, sky_u * s, s, secs, seed_day,
+                          heavy=(weather == BLIZZARD))
+            elif weather == DOWNPOUR:
                 draw_downpour(p, ix, iy, iw, sky_u * s, s, secs, seed_day)
             else:
                 draw_rain(p, ix, iy, iw, sky_u * s, s, secs, seed_day)
+
+    # 4.65) 秋天的落叶：不是天气，是季节的常态。雨雪天不飘——天空已经够满。
+    if fall and (pal.get("_season") or "") == "autumn" and weather is not None \
+            and weather not in PRECIP:
+        draw_leaves(p, ix, iy, iw, sky_u * s, s, secs, seed_day)
 
     # 4.7) 午休：花已经收成花苞了（见 _draw_flower），再从草地上飘三个 z
     if paused:

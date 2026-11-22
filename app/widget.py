@@ -107,8 +107,10 @@ class TimerWidget(ClockMixin, ContentMixin, PaintMixin, InteractMixin,
         self._anim_t0 = 0.0
         self._animating = False
         self._last_progress = 0.0
-        # 动效统一 60fps（可配）：草皮卷推进、里程碑、收工庆祝都用这条线
-        fps = int(self.cfg.get("ui.fx.fps", 60) or 60)
+        # 动效帧率（草皮卷推进、里程碑、收工庆祝都用这条线）。auto 时先按 60 装好，
+        # 真正的档位在启动动画那一刻由 _fps_mode 校正（见 clock._start_anim）
+        _mode = str(self.cfg.get("ui.fx.fps", "auto") or "auto")
+        fps = self._FPS_OF.get(_mode, 60)
         self._anim_timer = QTimer(self)
         self._anim_timer.setInterval(max(8, int(1000 / max(15, fps))))
         self._anim_timer.timeout.connect(self._anim_step)
@@ -225,11 +227,16 @@ class TimerWidget(ClockMixin, ContentMixin, PaintMixin, InteractMixin,
 
 
     def set_tier(self, tier: str) -> None:
+        # 菜单点完不关，"单选"得自己维护：先把三档的勾都按新值摆好，
+        # 再判断要不要真的切（点当前档时 Qt 会把这一个勾反掉，得兜回来）。
+        for k, act in getattr(self, "_tier_actions", {}).items():
+            act.setChecked(k == tier)
         if tier not in TIERS or tier == self._tier:
             return
         geo = self.frameGeometry()
         right, bottom = geo.right(), geo.bottom()
         self._apply_tier(tier)
+        self._auto_fps = None                  # 尺寸变了，机器能不能扛 60 得重测
         # 锚定右下角，切档时窗口不会跳
         self.move(right - self.width() + 1, bottom - self.height() + 1)
         self.cfg.set("ui.size_tier", tier)

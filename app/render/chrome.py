@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import math
+import os
 import random
 
 from PySide6.QtCore import QPoint, QPointF, QRect, Qt
@@ -14,12 +15,22 @@ from .. import pixel_font
 
 from .common import _scaled, fill, texture  # noqa: E402
 
+# 草方块图标是纯函数的产物（pal + size + seed 定死），却要逐像素做多边形点测试，
+# 一帧就吃掉一半绘制时间。调色板每小时才换一次，存下来直接复用。
+_iso_cache: dict = {"key": None, "img": None}
+_NO_CACHE = os.environ.get("MCW_NO_CACHE") == "1"
+
+
 def iso_block(pal: dict, size: int = 16, seed: int = 5) -> QImage:
     """等距投影的草方块（和 MC 物品栏里拿在手上的那个一样），size 建议 16。
 
     顶面草绿、左侧泥土偏暗、右侧泥土偏亮，四面自动描黑边；噪声只用同一色系
     的微调，避免纹理把立方体的体块感打散。
     """
+    key = (size, seed, pal.get("_rev"), tuple(pal.get("grass") or ()),
+           tuple(pal.get("dirt") or ()), tuple(pal.get("outline") or ()))
+    if not _NO_CACHE and _iso_cache["key"] == key and _iso_cache["img"] is not None:
+        return _iso_cache["img"]
     img = QImage(size, size, QImage.Format.Format_ARGB32_Premultiplied)
     img.fill(Qt.transparent)
     u = size / 16.0
@@ -75,17 +86,66 @@ def iso_block(pal: dict, size: int = 16, seed: int = 5) -> QImage:
             else:
                 p.fillRect(x, y, 1, 1, col)
     p.end()
+    if not _NO_CACHE:
+        _iso_cache["key"], _iso_cache["img"] = key, img
     return img
 
 
-def draw_grass_strip(p: QPainter, w: int, h_px: int, s: int, pal: dict) -> None:
-    """顶部草皮条：草地 + 1 单位泥土 + 交界暗线。"""
+def _snow_cap(p: QPainter, x: int, y: int, w: int, h: int, s: int,
+              keep_clear: tuple[int, int] | None = None,
+              clear_max: int = 3, cap: int = 6) -> None:
+    """草尖积雪：有厚度的雪层，不是一条白边。
+
+    四条规则：
+    1. **厚度要有量**——1~2 单位像贴了一条白胶带，会被当成画错的边框；压到 3~6 单位才读得出是雪。
+    2. **顶上亮、中间白**——最上面 1 单位用纯白，受光的一面朝上，雪才有圆头的感觉。
+    3. **下沿压 1 单位冷灰影**——没有影子，雪就只是白块；有影子，雪才是压在草上的东西。
+    4. **标题那一带压薄**——`keep_clear` 是标题文字的横坐标范围，那里雪只留 2 单位，
+       否则白字压在白雪上读不出来。两端照常堆厚，看起来正好是"雪被窗户中间挡住"的自然样子。
+
+    厚度按列跳变（0.45 的概率重新抽），于是起伏是成片的，不是逐列抖动的锯齿。
+    """
+    snow = QColor("#dbe8f8")
+    snow_top = QColor("#ffffff")
+    shade = QColor("#7d93a7")
+    rows = max(1, h // s)
+    n = max(1, w // s)
+    max_h = max(2, min(rows - 1, cap))
+    rng = random.Random(n * 131 + 7)
+    thick = min(max_h, 4)
+    i = 0
+    while i < n:
+        if rng.random() < 0.45:
+            thick = rng.randint(min(3, max_h), max_h)
+        px = x + i * s
+        lim = max_h
+        if keep_clear is not None and keep_clear[0] <= px < keep_clear[1]:
+            lim = min(max_h, clear_max)
+        t = min(thick, lim)
+        for k in range(t):
+            fill(p, px, y + k * s, s, s, snow_top if k == 0 else snow)
+        if t < rows:
+            fill(p, px, y + t * s, s, s, shade)
+        i += 1
+
+
+def draw_grass_strip(p: QPainter, w: int, h_px: int, s: int, pal: dict,
+                     keep_clear: tuple[int, int] | None = None,
+                     clear_max: int = 3, snow_cap: int | None = None) -> None:
+    """顶部草皮条：草地 + 1 单位泥土 + 交界暗线。
+
+    冬天在草尖上压一层厚雪（见 `_snow_cap`）。位置用固定种子，不随帧变——
+    否则每刷新一次雪层就重新洗牌，看着像屏幕在抖。
+    """
     inner_w = w - 2 * s
     grass_h = h_px - 3 * s
     if grass_h > 0 and inner_w > 2:
         p.drawImage(QPoint(s, s), texture("grass", max(1, inner_w // s), max(1, grass_h // s), s, pal))
         p.drawImage(QPoint(s, h_px - 2 * s), texture("dirt", max(1, inner_w // s), 2, s, pal))
         fill(p, s, h_px - 2 * s, inner_w, s, QColor(pal["grass"][-1]).darker(125))
+        if (pal.get("_season") or "") == "winter":
+            _snow_cap(p, s, s, inner_w, max(s, grass_h), s, keep_clear, clear_max,
+                      snow_cap or 6)
 
 
 def draw_image_outlined(p: QPainter, x: int, y: int, size_px: int, img: QImage, s: int,

@@ -76,7 +76,8 @@ class MCDialog(PixelCanvas, DragMixin, QDialog):
         p.fillRect(QRect(2 * S, 2 * S, w, h), QColor(0, 0, 0, 60))
         theme.draw_panel(p, 0, 0, w, h, S, pal)
         hh = self.u(18)
-        theme.draw_grass_strip(p, w, hh, S, pal)
+        # 对话框的标题顶在上边，雪只能压 2 单位，不然白字会陷进雪里
+        theme.draw_grass_strip(p, w, hh, S, pal, keep_clear=(0, w), clear_max=2)
         theme.fill(p, 0, hh, w, S, QColor(pal["outline"]))
 
         x = self.u(7)
@@ -488,9 +489,11 @@ class AboutDialog(MCDialog):
                             QColor(pal["accent"]), family, bold=True,
                             align="center", max_w=w)
 
-        running = "exe 版" if getattr(sys, "frozen", False) else "Python 源码版"
-        pixel_font.draw_cjk(p, 0, self.u(70), f"运行方式：{running}", self.u(7),
-                            QColor(pal["text_dim"]), family, align="center", max_w=w)
+        # 只有源码版才有这一行：正式版用户不需要知道自己是"exe 版"，
+        # 那是打包方式，不是他该关心的事。
+        if not getattr(sys, "frozen", False):
+            pixel_font.draw_cjk(p, 0, self.u(70), "开发预览版", self.u(7),
+                                QColor(pal["text_dim"]), family, align="center", max_w=w)
 
         hh, mm = divmod(self.cumulative, 60)
         total = f"累计加班 {hh} 小时 {mm} 分" if hh else f"累计加班 {mm} 分钟"
@@ -709,7 +712,7 @@ class DayDialog(MCDialog):
             y += 14
         if self._note:
             text = self._note if len(self._note) <= 22 else self._note[:21] + "…"
-            pixel_font.draw_cjk(p, self.u(14), self.u(y + 3), f"记：{text}", self.u(7),
+            pixel_font.draw_cjk(p, self.u(14), self.u(y + 3), f"吐槽：{text}", self.u(7),
                                 QColor(pal["text_dim"]), family, max_w=w - self.u(28))
 
 
@@ -786,24 +789,42 @@ class WeekDialog(MCDialog):
                             self.u(7), QColor(pal["text_dim"]), family)
 
 
+# 输入框里的那行提示：一天换一句，不重复。都是让人敢写的话——
+# 写下来这一步本身有门槛，提示语太正式，就更不想写了。
+NOTE_HINTS = (
+    "烦心事都写在这里，本宝宝帮你记住！",
+    "今天谁惹你了？写两句，别憋着。",
+    "骂吧，写完就放下。",
+    "不写名字也行，反正它不会告状。",
+    "今天有什么想吐槽的？",
+    "写下来就存住了，明天再看也不迟。",
+)
+
+
 class NoteDialog(MCDialog):
-    """随手记一句：今天想说的，不必是工作。
+    """吐槽两句：今天想说的，不必是工作。
 
     存进 data.json 的 notes，按天一条，跟着 schedule 一起被修剪。
     「今日结算」底部会显示今天那句——它和工作数据不是一类东西，所以另起一行。
+
+    按钮用「取消 / 确定」而不是「清空 / 记住」：清空看着像"要把我写的删掉"，
+    实际上它以前是"清空并保存"，取消才是人真正想表达的那个意思。
+    真想删掉这句，把内容删干净再按确定就行。
     """
 
     W_UNITS = 208
     H_UNITS = 104
-    TITLE = "记一句"
+    TITLE = "吐槽两句"
     SHOW_ICON = False
 
-    def __init__(self, parent, cfg, pal, S, dpr, text: str = ""):
+    def __init__(self, parent, cfg, pal, S, dpr, text: str = "", day=None):
         super().__init__(parent, cfg, pal, S, dpr)
         self.edit = QLineEdit(self)
         self.edit.setFont(self._qfont(8))
         self.edit.setMaxLength(60)
-        self.edit.setPlaceholderText("今天……")
+        seed = (day or getattr(parent, "_day", None))
+        hint = NOTE_HINTS[(seed.toordinal() if seed else 0) % len(NOTE_HINTS)]
+        self.edit.setPlaceholderText(hint)
         self.edit.setText(text or "")
         self.edit.setStyleSheet(
             f"QLineEdit{{background:{pal['panel_shade'][0]};color:{pal['text']};"
@@ -811,19 +832,15 @@ class NoteDialog(MCDialog):
         )
         self._place(self.edit, 14, 30, self.W_UNITS - 28, 18)
 
-        b_clear = QPushButton("清空", self)
-        b_clear.setFont(self._qfont(7))
-        self._place(b_clear, 14, 76, 60, 15)
-        b_clear.clicked.connect(self._clear)
-        b_ok = QPushButton("记住", self)
+        b_cancel = QPushButton("取消", self)
+        b_cancel.setFont(self._qfont(7))
+        self._place(b_cancel, 14, 76, 60, 15)
+        b_cancel.clicked.connect(self.reject)
+        b_ok = QPushButton("确定", self)
         b_ok.setFont(self._qfont(7))
         self._place(b_ok, 134, 76, 60, 15)
         b_ok.clicked.connect(self.accept)
         self.edit.setFocus()
-
-    def _clear(self) -> None:
-        self.edit.setText("")
-        self.accept()
 
     def text(self) -> str:
         return self.edit.text().strip()

@@ -222,9 +222,17 @@ def main() -> None:
     w6 = TimerWidget(cfg, Store(tmp / "data7.json"), engine.build_rule(cfg))
     m6 = w6.build_menu()
     labels = [a.text() for a in m6.actions()]
-    assert "今日结算…" in labels, labels
-    assert "一周…" in labels, labels
-    assert "记一句…" in labels, labels
+    # 一级菜单只留高频四件事 + 两个二级入口；低频项都收进子菜单
+    assert labels[:4] == ["修改今日上班时间…", "设置…", "今天就到这（收工）", "重置当日计时"], labels
+    assert "牛马日常" in labels and "外观" in labels, labels
+    subs = {a.text(): a.menu() for a in m6.actions() if a.menu() is not None}
+    rec = [a.text() for a in subs["牛马日常"].actions()]
+    assert "今日结算…" in rec and "一周…" in rec and "吐槽两句…" in rec, rec
+    show = [a.text() for a in subs["外观"].actions()]
+    assert "云朵" in show, show
+    assert any("下落物" in t for t in show), show
+    assert any("音效" in t for t in show), show
+    assert "每日一句" in show, show
 
     from app.dialogs import DayDialog, NoteDialog, WeekDialog  # noqa: E402
 
